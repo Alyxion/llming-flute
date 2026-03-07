@@ -1,0 +1,51 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --save ""
+    networks:
+      - internal
+      - control
+    ports:
+      - "127.0.0.1:6399:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  worker:
+    build: .
+    networks:
+      - internal
+    deploy:
+      replicas: 2
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MAX_CONCURRENT: "4"
+      OPENBLAS_NUM_THREADS: "2"
+    # --- isolation ---
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 2.0
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+    internal: true       # workers: no internet, no LAN — only redis
+  control:
+    driver: bridge       # redis host access for the client
+
+volumes:
+  redis-data:

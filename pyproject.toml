@@ -1,0 +1,49 @@
+[project]
+name = "flute"
+version = "0.1.0"
+description = "Remote-controlled isolated Python execution with resource limits"
+license = "MIT"
+authors = [
+    {name = "Michael Ikemann"}
+]
+requires-python = ">=3.14"
+dependencies = [
+    "redis>=5.0",
+    "psutil>=6.0",
+]
+
+[tool.poetry]
+packages = [{include = "flute", from = "llming_flute"}]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+pytest-cov = ">=6.0"
+ruff = ">=0.9"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires running Docker stack (deselect with '-m not integration')",
+]
+
+[tool.coverage.run]
+source = ["flute"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+exclude_lines = [
+    "if __name__",
+    "pragma: no cover",
+]
