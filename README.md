@@ -2,7 +2,7 @@
 
 Remote-controlled isolated Python execution with resource limits.
 
-Flute runs untrusted Python code in locked-down Docker containers with strict memory, disk, and runtime limits. Jobs are submitted via a Redis queue, executed in isolated subprocesses, and results (stdout, files) are returned through Redis.
+Flute runs untrusted Python code in locked-down Docker containers with strict memory, disk, and runtime limits. Jobs are submitted via a Redis queue, executed in isolated subprocesses, and results (stdout, files) are returned through Redis. Logs can be streamed in real time via Redis pub/sub.
 
 Built for scenarios where an LLM or web app needs a safe sandbox to execute user-provided Python code — think ChatGPT-style code execution.
 
@@ -11,6 +11,7 @@ Built for scenarios where an LLM or web app needs a safe sandbox to execute user
 ```
 Client  ──submit──►  Redis Queue  ──pop──►  Worker Container(s)
         ◄──result──                         │
+        ◄──stream──  Redis Pub/Sub  ◄───────┤ live stdout
                                             ├─ subprocess with rlimits
                                             ├─ psutil memory monitoring
                                             └─ disk usage polling
@@ -79,6 +80,23 @@ sid = c.submit(
 )
 ```
 
+### Live Log Streaming
+
+Stream stdout/stderr from a running session in real time:
+
+```python
+sid = c.submit("import time\nfor i in range(5):\n    print(f'Step {i}')\n    time.sleep(1)")
+
+for line in c.stream_logs(sid, timeout=30):
+    print(line, end="")
+# Step 0
+# Step 1
+# Step 2
+# ...
+```
+
+Subscribe right after `submit()` — logs are published line-by-line via Redis pub/sub as the subprocess produces output. After streaming, call `c.result(sid)` for the full result including output files.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -86,6 +104,23 @@ sid = c.submit(
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 | `MAX_CONCURRENT` | `4` | Max concurrent sessions per worker |
 | `WORKDIR_BASE` | System temp dir | Base directory for session workdirs |
+
+## Samples
+
+Ready-to-run examples in `samples/`:
+
+| Sample | Description |
+|--------|-------------|
+| [`hello_world.py`](samples/hello_world.py) | Submit code and print the result |
+| [`file_processing.py`](samples/file_processing.py) | Send CSV input, run pandas, retrieve output |
+| [`matplotlib_chart.py`](samples/matplotlib_chart.py) | Generate a chart and display the PNG |
+| [`live_logs.py`](samples/live_logs.py) | Stream stdout in real time with progress bar |
+
+```bash
+# Requires running Docker stack (docker compose up -d)
+python samples/hello_world.py
+python samples/live_logs.py
+```
 
 ## Pre-installed Libraries
 
@@ -99,7 +134,7 @@ The worker image ships with a scientific Python stack:
 # Install dependencies
 poetry install
 
-# Run unit tests (51 tests, 100% coverage)
+# Run unit tests (60 tests, 100% coverage)
 poetry run pytest tests/test_client.py tests/test_server.py -v \
     --cov=flute --cov-report=term-missing
 
@@ -115,13 +150,19 @@ REDIS_URL=redis://localhost:6399/0 poetry run pytest tests/test_integration.py -
 ```
 llming_flute/flute/
 ├── __init__.py        # Package exports (SessionClient, __version__)
-├── client.py          # SessionClient — submit, wait, result
+├── client.py          # SessionClient — submit, wait, stream_logs, result
 └── server.py          # Worker server — run_session, serve, main
+
+samples/
+├── hello_world.py     # Basic submit & wait
+├── file_processing.py # Input/output file handling
+├── matplotlib_chart.py# Chart generation with PNG display
+└── live_logs.py       # Real-time log streaming
 
 tests/
 ├── conftest.py        # FakeRedis mock & fixtures
-├── test_client.py     # 18 client unit tests
-├── test_server.py     # 33 server unit tests
+├── test_client.py     # 22 client unit tests
+├── test_server.py     # 38 server unit tests
 └── test_integration.py # 22 end-to-end tests (Docker required)
 
 Dockerfile             # Worker image (Python 3.14 + scientific stack)
@@ -140,6 +181,10 @@ Connects to Redis. Falls back to `REDIS_URL` env var, then `redis://localhost:63
 Enqueue a Python code string for execution. Returns `session_id`.
 
 - **`input_files`**: `dict[str, bytes]` — files written into the working directory before execution.
+
+### `.stream_logs(session_id, timeout=60) -> Generator[str]`
+
+Yield log lines as they arrive via Redis pub/sub. Subscribe right after `submit()` for complete output. Stops on session completion, EOF, or timeout.
 
 ### `.wait(session_id, timeout=60, poll=0.3) -> dict`
 

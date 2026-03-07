@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 from conftest import FakeRedis
-
 from flute.server import (
     _dir_size_mb,
     _kill_tree,
     _make_preexec,
     _signal_name,
+    _stream_output,
     run_session,
     serve,
 )
@@ -281,6 +281,61 @@ class TestRunSession:
             run_session(spec, r)
         assert r.get("session:t15:status") == "killed"
 
+    def test_logs_streamed_via_pubsub(self):
+        """Log lines are published to Redis pub/sub during execution."""
+        r = FakeRedis()
+        run_session({"session_id": "tpub", "code": "print('streamed')"}, r)
+        messages = r.published.get("session:tpub:logs:stream", [])
+        assert any("streamed" in m for m in messages if m)
+        assert "" in messages  # EOF sentinel
+
+
+# ---------------------------------------------------------------------------
+# _stream_output
+# ---------------------------------------------------------------------------
+
+
+class TestStreamOutput:
+    def test_writes_to_log_and_publishes(self, tmp_path):
+        import io
+
+        pipe = io.BytesIO(b"line1\nline2\n")
+        log_file = open(tmp_path / "test.log", "w")  # noqa: SIM115
+        r = FakeRedis()
+        channel = "test:stream"
+
+        _stream_output(pipe, log_file, r, channel)
+        log_file.close()
+
+        assert (tmp_path / "test.log").read_text() == "line1\nline2\n"
+        assert r.published[channel] == ["line1\n", "line2\n", ""]
+
+    def test_handles_publish_failure(self, tmp_path):
+        import io
+
+        pipe = io.BytesIO(b"ok\n")
+        log_file = open(tmp_path / "test.log", "w")  # noqa: SIM115
+        r = FakeRedis()
+        r.publish = MagicMock(side_effect=RuntimeError("redis down"))
+
+        _stream_output(pipe, log_file, r, "ch")
+        log_file.close()
+
+        assert (tmp_path / "test.log").read_text() == "ok\n"
+
+    def test_empty_pipe(self, tmp_path):
+        import io
+
+        pipe = io.BytesIO(b"")
+        log_file = open(tmp_path / "test.log", "w")  # noqa: SIM115
+        r = FakeRedis()
+
+        _stream_output(pipe, log_file, r, "ch")
+        log_file.close()
+
+        assert (tmp_path / "test.log").read_text() == ""
+        assert r.published["ch"] == [""]  # EOF sentinel only
+
 
 # ---------------------------------------------------------------------------
 # serve
@@ -357,6 +412,24 @@ class TestServe:
 
         # max_concurrent=1: the job takes the slot, acquire times out on next iteration
         serve(fake_r, shutdown, max_concurrent=1)
+
+    def test_shutdown_after_acquire(self):
+        """Shutdown fires after slot acquired, triggers early break."""
+        fake_r = FakeRedis()
+        shutdown = threading.Event()
+        acquire_count = 0
+
+        class ShutdownSemaphore(threading.Semaphore):
+            def acquire(self, blocking=True, timeout=None):
+                nonlocal acquire_count
+                result = super().acquire(blocking=blocking, timeout=timeout)
+                acquire_count += 1
+                if acquire_count == 2:
+                    shutdown.set()
+                return result
+
+        with patch("flute.server.threading.Semaphore", ShutdownSemaphore):
+            serve(fake_r, shutdown, max_concurrent=2)
 
     def test_empty_queue_then_shutdown(self):
         fake_r = FakeRedis()

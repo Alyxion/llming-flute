@@ -55,6 +55,34 @@ class SessionClient:
             time.sleep(poll)
         return {"session_id": session_id, "status": "timeout"}
 
+    def stream_logs(self, session_id: str, timeout: float = 60):
+        """Yield log lines as they arrive via Redis pub/sub.
+
+        Subscribe to the live log channel for a session. Yields each line
+        as a string. Stops on EOF sentinel, session completion, or timeout.
+        """
+        channel = f"session:{session_id}:logs:stream"
+        pubsub = self.r.pubsub()
+        pubsub.subscribe(channel)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                msg = pubsub.get_message(timeout=1)
+                if msg is None:
+                    status = self.r.get(f"session:{session_id}:status")
+                    if status in ("completed", "error", "killed"):
+                        break
+                    continue
+                if msg["type"] != "message":
+                    continue
+                data = msg["data"]
+                if data == "":
+                    break
+                yield data
+        finally:
+            pubsub.unsubscribe(channel)
+            pubsub.close()
+
     def result(self, session_id: str) -> dict:
         """Fetch the result of a session."""
         sid = session_id

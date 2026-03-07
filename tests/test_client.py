@@ -3,6 +3,8 @@
 import base64
 import json
 import os
+import threading
+import time
 from unittest.mock import patch
 
 from flute.client import SessionClient
@@ -147,3 +149,64 @@ class TestResult:
         assert len(result["output_files"]) == 2
         assert result["output_files"]["a.txt"] == b"aaa"
         assert result["output_files"]["b.txt"] == b"bbb"
+
+
+class TestStreamLogs:
+    def test_receives_lines(self, client, fake_redis):
+        fake_redis.set("session:sl1:status", "running")
+
+        def publish_later():
+            time.sleep(0.1)
+            fake_redis.publish("session:sl1:logs:stream", "hello\n")
+            fake_redis.publish("session:sl1:logs:stream", "world\n")
+            fake_redis.publish("session:sl1:logs:stream", "")  # EOF
+
+        t = threading.Thread(target=publish_later, daemon=True)
+        t.start()
+
+        lines = list(client.stream_logs("sl1", timeout=5))
+        assert lines == ["hello\n", "world\n"]
+
+    def test_stops_on_session_complete(self, client, fake_redis):
+        fake_redis.set("session:sl2:status", "completed")
+        lines = list(client.stream_logs("sl2", timeout=2))
+        assert lines == []
+
+    def test_timeout(self, client, fake_redis):
+        fake_redis.set("session:sl3:status", "running")
+        start = time.monotonic()
+        lines = list(client.stream_logs("sl3", timeout=0.5))
+        elapsed = time.monotonic() - start
+        assert lines == []
+        assert elapsed < 3
+
+    def test_skips_non_message_types(self, client, fake_redis):
+        """Non-message types (subscribe confirmations) are skipped."""
+        fake_redis.set("session:sl4:status", "running")
+
+        original_pubsub = fake_redis.pubsub
+
+        def patched_pubsub():
+            ps = original_pubsub()
+            original_subscribe = ps.subscribe
+
+            def subscribe_with_confirmation(channel):
+                original_subscribe(channel)
+                # Inject a subscribe confirmation before any real messages
+                ps._messages.insert(0, {"type": "subscribe", "channel": channel, "data": 1})
+
+            ps.subscribe = subscribe_with_confirmation
+            return ps
+
+        fake_redis.pubsub = patched_pubsub
+
+        def publish_later():
+            time.sleep(0.1)
+            fake_redis.publish("session:sl4:logs:stream", "ok\n")
+            fake_redis.publish("session:sl4:logs:stream", "")
+
+        t = threading.Thread(target=publish_later, daemon=True)
+        t.start()
+
+        lines = list(client.stream_logs("sl4", timeout=5))
+        assert lines == ["ok\n"]

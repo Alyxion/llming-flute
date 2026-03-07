@@ -121,11 +121,19 @@ def run_session(spec: dict, rconn):
 
         proc = subprocess.Popen(
             [PYTHON, "-u", runner_path],
-            stdout=log_file,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=workdir,
             preexec_fn=_make_preexec(max_disk),
         )
+
+        channel = f"session:{sid}:logs:stream"
+        reader = threading.Thread(
+            target=_stream_output,
+            args=(proc.stdout, log_file, rconn, channel),
+            daemon=True,
+        )
+        reader.start()
 
         # --- monitor loop ---
         start = time.monotonic()
@@ -178,6 +186,7 @@ def run_session(spec: dict, rconn):
             else:
                 final_status = "completed" if final_exit == 0 else "error"
 
+        reader.join(timeout=5)
         log_file.close()
 
         # --- collect logs ---
@@ -210,6 +219,23 @@ def run_session(spec: dict, rconn):
         _set("logs", traceback.format_exc())
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _stream_output(pipe, log_file, rconn, channel):
+    """Read lines from subprocess pipe, write to log file, publish to Redis."""
+    try:
+        while True:
+            line = pipe.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace")
+            log_file.write(text)
+            log_file.flush()
+            with contextlib.suppress(Exception):
+                rconn.publish(channel, text)
+    finally:
+        with contextlib.suppress(Exception):
+            rconn.publish(channel, "")
 
 
 def _dir_size_mb(path: str) -> float:
