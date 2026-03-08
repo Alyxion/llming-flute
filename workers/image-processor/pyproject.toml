@@ -1,0 +1,11 @@
+[project]
+name = "image-processor"
+description = "Image processing task runner"
+dependencies = [
+    "pillow>=10.0",
+]
+
+[tool.flute.worker]
+type = "task-runner"
+handler = "handler:ImageProcessHandler"
+description = "Process images: grayscale, resize, thumbnail"

@@ -10,16 +10,21 @@ requires-python = ">=3.14"
 dependencies = [
     "redis>=5.0",
     "psutil>=6.0",
+    "pydantic>=2.0",
 ]
 
 [tool.poetry]
 packages = [{include = "flute", from = "llming_flute"}]
+
+[project.optional-dependencies]
+image = ["pillow>=10.0"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
 pytest-asyncio = ">=0.25"
 pytest-cov = ">=6.0"
 ruff = ">=0.9"
+pillow = ">=10.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

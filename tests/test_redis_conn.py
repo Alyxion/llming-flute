@@ -1,5 +1,6 @@
 """Unit tests for flute.redis_conn."""
 
+import ssl
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +27,9 @@ class TestConnectRedis:
             )
         assert result is mock_client
         mock_from_url.assert_called_once_with(
-            "rediss://:pass@host:10000", decode_responses=True
+            "rediss://:pass@host:10000",
+            decode_responses=True,
+            ssl_cert_reqs=ssl.CERT_NONE,
         )
 
     @pytest.mark.asyncio
@@ -41,5 +44,37 @@ class TestConnectRedis:
             )
         assert result is mock_client
         mock_from_url.assert_called_once_with(
-            "rediss://:pass@host:10000", decode_responses=True
+            "rediss://:pass@host:10000",
+            decode_responses=True,
+            ssl_cert_reqs=ssl.CERT_NONE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cluster_non_tls_no_ssl_cert_reqs(self):
+        """Non-TLS cluster URL (redis://) does not add ssl_cert_reqs."""
+        mock_client = MagicMock()
+        with patch(
+            "flute.redis_conn.redis.asyncio.cluster.RedisCluster.from_url",
+            return_value=mock_client,
+        ) as mock_from_url:
+            await connect_redis("redis://host:6379,", decode_responses=True)
+        mock_from_url.assert_called_once_with(
+            "redis://host:6379", decode_responses=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_cluster_tls_explicit_ssl_cert_reqs(self):
+        """Explicit ssl_cert_reqs is not overridden."""
+        mock_client = MagicMock()
+        with patch(
+            "flute.redis_conn.redis.asyncio.cluster.RedisCluster.from_url",
+            return_value=mock_client,
+        ) as mock_from_url:
+            await connect_redis(
+                "rediss://:pass@host:10000,",
+                ssl_cert_reqs=ssl.CERT_REQUIRED,
+            )
+        mock_from_url.assert_called_once_with(
+            "rediss://:pass@host:10000",
+            ssl_cert_reqs=ssl.CERT_REQUIRED,
         )

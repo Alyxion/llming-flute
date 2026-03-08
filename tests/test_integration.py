@@ -434,6 +434,73 @@ async def test_bust_loop_subprocess_chain(c):
 
 
 # ---------------------------------------------------------------------------
+# Security: env var isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_env_vars_cleared(c):
+    """User code cannot see REDIS_URL or other server env vars."""
+    code = textwrap.dedent("""\
+        import os
+        redis_url = os.environ.get("REDIS_URL", "NOT FOUND")
+        print(f"REDIS_URL={redis_url}")
+        with open("env.txt", "w") as f:
+            f.write(redis_url)
+    """)
+    sid = await c.submit(code, session_id="test-env-cleared")
+    res = await c.wait(sid, timeout=10)
+    assert res["status"] == "completed"
+    assert res["output_files"]["env.txt"] == b"NOT FOUND"
+
+
+# ---------------------------------------------------------------------------
+# Security: cannot destroy container filesystem
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cannot_delete_system_files(c):
+    """Attempting to delete system files fails (read-only filesystem)."""
+    code = textwrap.dedent("""\
+        import os, shutil
+        errors = []
+        for path in ["/app", "/usr", "/etc"]:
+            try:
+                shutil.rmtree(path)
+                errors.append(f"deleted {path}")
+            except Exception as e:
+                print(f"blocked: {path}: {e}")
+        if errors:
+            raise RuntimeError(f"Should not have deleted: {errors}")
+        print("ALL BLOCKED")
+    """)
+    sid = await c.submit(
+        code, session_id="test-no-delete-sys", max_runtime_seconds=10
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "completed"
+    assert "ALL BLOCKED" in res["logs"]
+
+
+@pytest.mark.asyncio
+async def test_workdir_restricted(c):
+    """Workdir has restricted permissions (0o700)."""
+    code = textwrap.dedent("""\
+        import os, stat
+        cwd = os.getcwd()
+        mode = stat.S_IMODE(os.stat(cwd).st_mode)
+        print(f"workdir mode: {oct(mode)}")
+        assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"
+        print("PERMISSIONS OK")
+    """)
+    sid = await c.submit(code, session_id="test-workdir-perms")
+    res = await c.wait(sid, timeout=10)
+    assert res["status"] == "completed"
+    assert "PERMISSIONS OK" in res["logs"]
+
+
+# ---------------------------------------------------------------------------
 # Quota tests
 # ---------------------------------------------------------------------------
 
@@ -443,6 +510,7 @@ async def test_quota_fresh_user_has_full_budget(c):
     """A new user with no prior usage has full quota available."""
     q = await c.quota("quota-fresh")
     assert q["user_id"] == "quota-fresh"
+    assert q["worker_type"] == "python"
     assert q["used_seconds"] == 0.0
     assert q["remaining_seconds"] == q["limit_seconds"]
     assert q["resets_in_seconds"] == -1
@@ -453,7 +521,7 @@ async def test_quota_tracks_usage(c):
     """Running a session charges the user's quota."""
     user = "quota-track"
     # Clear any previous quota
-    await c.r.delete(f"quota:{user}")
+    await c.r.delete(f"quota:{user}:python")
 
     sid = await c.submit(
         "import time; time.sleep(1); print('done')",
@@ -474,7 +542,7 @@ async def test_quota_tracks_usage(c):
 async def test_quota_accumulates_across_sessions(c):
     """Multiple sessions accumulate usage under the same user."""
     user = "quota-accum"
-    await c.r.delete(f"quota:{user}")
+    await c.r.delete(f"quota:{user}:python")
 
     for i in range(3):
         sid = await c.submit(
@@ -494,9 +562,13 @@ async def test_quota_exceeded_rejects_session(c):
     """When quota is exhausted, the session is immediately rejected."""
     user = "quota-exceeded"
     # Artificially exhaust the quota
-    limit = int(await c.r.get("quota:__config:limit") or 600)
-    await c.r.set(f"quota:{user}", str(limit + 100))
-    await c.r.expire(f"quota:{user}", 3600)
+    rules_str = await c.r.get("quota:__config:rules") or "*:600/3600"
+    from flute.quota_rules import get_quota_for_type, parse_quota_rules
+
+    rules = parse_quota_rules(rules_str)
+    limit, _ = get_quota_for_type(rules, "python")
+    await c.r.set(f"quota:{user}:python", str(limit + 100))
+    await c.r.expire(f"quota:{user}:python", 3600)
 
     sid = await c.submit(
         "print('should not run')",
@@ -511,7 +583,7 @@ async def test_quota_exceeded_rejects_session(c):
     assert res["logs"] == ""  # no output
     assert res["output_files"] == {}  # no files
     assert "quota exceeded" in res["error"].lower()
-    # Error message contains usage and limit info
+    # Error message contains limit info
     assert str(limit) in res["error"]
 
 
@@ -519,9 +591,13 @@ async def test_quota_exceeded_rejects_session(c):
 async def test_quota_exceeded_shows_in_quota_query(c):
     """client.quota() reflects the exceeded state."""
     user = "quota-exceeded-query"
-    limit = int(await c.r.get("quota:__config:limit") or 600)
-    await c.r.set(f"quota:{user}", str(limit + 50))
-    await c.r.expire(f"quota:{user}", 1800)
+    rules_str = await c.r.get("quota:__config:rules") or "*:600/3600"
+    from flute.quota_rules import get_quota_for_type, parse_quota_rules
+
+    rules = parse_quota_rules(rules_str)
+    limit, _ = get_quota_for_type(rules, "python")
+    await c.r.set(f"quota:{user}:python", str(limit + 50))
+    await c.r.expire(f"quota:{user}:python", 1800)
 
     q = await c.quota(user)
     assert q["used_seconds"] >= limit
@@ -546,7 +622,7 @@ async def test_quota_independent_per_user(c):
     """Different users have independent quota counters."""
     user_a, user_b = "quota-indep-a", "quota-indep-b"
     for u in (user_a, user_b):
-        await c.r.delete(f"quota:{u}")
+        await c.r.delete(f"quota:{u}:python")
 
     # Only user_a runs a session
     sid = await c.submit(
@@ -567,7 +643,7 @@ async def test_quota_independent_per_user(c):
 async def test_quota_charged_on_killed_session(c):
     """Quota is charged even when a session is killed for exceeding limits."""
     user = "quota-killed"
-    await c.r.delete(f"quota:{user}")
+    await c.r.delete(f"quota:{user}:python")
 
     sid = await c.submit(
         "import time; time.sleep(60)",
@@ -586,7 +662,7 @@ async def test_quota_charged_on_killed_session(c):
 async def test_quota_charged_on_error_session(c):
     """Quota is charged even when the session code raises an error."""
     user = "quota-error"
-    await c.r.delete(f"quota:{user}")
+    await c.r.delete(f"quota:{user}:python")
 
     sid = await c.submit(
         "raise RuntimeError('boom')",
@@ -598,3 +674,108 @@ async def test_quota_charged_on_error_session(c):
 
     q = await c.quota(user)
     assert q["used_seconds"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Worker discovery
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workers_visible(c):
+    """At least one python worker should be visible via heartbeat."""
+    workers = await c.workers()
+    python_workers = [w for w in workers if w["worker_type"] == "python"]
+    assert len(python_workers) >= 1
+    assert all(w["alive"] for w in python_workers)
+
+
+# ---------------------------------------------------------------------------
+# Image worker tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_image_grayscale(c):
+    """Image worker converts a color image to grayscale."""
+    import io
+
+    from PIL import Image
+
+    # Create a test image
+    img = Image.new("RGB", (100, 80), color=(255, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_bytes = buf.getvalue()
+
+    sid = await c.submit(
+        "",  # no code for image worker
+        session_id="test-img-grayscale",
+        worker_type="image",
+        operation="grayscale",
+        input_files={"photo.png": img_bytes},
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "completed"
+    assert "grayscale" in res["logs"].lower()
+    assert "output.png" in res["output_files"]
+
+    # Verify output is actually grayscale
+    out_img = Image.open(io.BytesIO(res["output_files"]["output.png"]))
+    assert out_img.mode == "L"
+
+
+@pytest.mark.asyncio
+async def test_image_resize(c):
+    """Image worker resizes an image."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 150), color=(0, 128, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    img_bytes = buf.getvalue()
+
+    sid = await c.submit(
+        "",
+        session_id="test-img-resize",
+        worker_type="image",
+        operation="resize",
+        params={"width": 50, "height": 40},
+        input_files={"photo.jpg": img_bytes},
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "completed"
+    assert "50x40" in res["logs"]
+
+    out_img = Image.open(io.BytesIO(res["output_files"]["output.jpg"]))
+    assert out_img.size == (50, 40)
+
+
+@pytest.mark.asyncio
+async def test_image_thumbnail(c):
+    """Image worker creates a thumbnail."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (400, 300), color=(0, 255, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_bytes = buf.getvalue()
+
+    sid = await c.submit(
+        "",
+        session_id="test-img-thumbnail",
+        worker_type="image",
+        operation="thumbnail",
+        params={"max_size": 100},
+        input_files={"photo.png": img_bytes},
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "completed"
+    assert "100" in res["logs"]
+
+    out_img = Image.open(io.BytesIO(res["output_files"]["output.png"]))
+    assert max(out_img.size) <= 100

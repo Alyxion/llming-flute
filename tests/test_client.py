@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -57,9 +58,10 @@ class TestSubmit:
     async def test_basic(self, client, fake_redis):
         sid = await client.submit("print('hi')", session_id="s1")
         assert sid == "s1"
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert payload["session_id"] == "s1"
         assert payload["code"] == "print('hi')"
+        assert payload["worker_type"] == "python"
         assert payload["max_runtime_seconds"] == 30
         assert payload["max_memory_mb"] == 128
         assert payload["max_disk_mb"] == 50
@@ -74,7 +76,7 @@ class TestSubmit:
         await client.submit(
             "x", session_id="s2", max_runtime_seconds=5, max_memory_mb=64, max_disk_mb=20
         )
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert payload["max_runtime_seconds"] == 5
         assert payload["max_memory_mb"] == 64
         assert payload["max_disk_mb"] == 20
@@ -82,39 +84,111 @@ class TestSubmit:
     @pytest.mark.asyncio
     async def test_with_input_files(self, client, fake_redis):
         await client.submit("x", session_id="s3", input_files={"data.csv": b"a,b,c"})
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert "input_files" in payload
         assert base64.b64decode(payload["input_files"]["data.csv"]) == b"a,b,c"
 
     @pytest.mark.asyncio
     async def test_no_input_files_omitted(self, client, fake_redis):
         await client.submit("x", session_id="s4")
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert "input_files" not in payload
 
     @pytest.mark.asyncio
     async def test_with_user_id(self, client, fake_redis):
         await client.submit("x", session_id="s6", user_id="alice")
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert payload["user_id"] == "alice"
 
     @pytest.mark.asyncio
     async def test_no_user_id_omitted(self, client, fake_redis):
         await client.submit("x", session_id="s7")
-        payload = json.loads(fake_redis.lists["session:queue"][0])
+        payload = json.loads(fake_redis.lists["session:queue:python"][0])
         assert "user_id" not in payload
 
     @pytest.mark.asyncio
     async def test_clears_stale_keys(self, client, fake_redis):
-        for suffix in ("status", "logs", "exit_code", "error", "workdir"):
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
             await fake_redis.set(f"session:s5:{suffix}", "stale")
         await fake_redis.hset("session:s5:output_files", "old.txt", "data")
+        await fake_redis.rpush("session:s5:logs:lines", "old line")
 
         await client.submit("x", session_id="s5")
 
-        for suffix in ("status", "logs", "exit_code", "error", "workdir"):
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
             assert await fake_redis.get(f"session:s5:{suffix}") is None
         assert await fake_redis.hgetall("session:s5:output_files") == {}
+        assert await fake_redis.lrange("session:s5:logs:lines", 0, -1) == []
+
+    @pytest.mark.asyncio
+    async def test_worker_type(self, client, fake_redis):
+        """Submit to a custom worker queue."""
+        await client.submit(
+            "x", session_id="s8", worker_type="custom",
+            input_files={"photo.png": b"data"},
+        )
+        payload = json.loads(fake_redis.lists["session:queue:custom"][0])
+        assert payload["worker_type"] == "custom"
+
+
+class TestSubmitTask:
+    @pytest.mark.asyncio
+    async def test_basic(self, client, fake_redis):
+        sid = await client.submit_task(
+            '{"text": "hello"}',
+            session_id="st1",
+            worker_type="echo",
+        )
+        assert sid == "st1"
+        payload = json.loads(fake_redis.lists["session:queue:echo"][0])
+        assert payload["session_id"] == "st1"
+        assert payload["task"] == '{"text": "hello"}'
+        assert payload["worker_type"] == "echo"
+        assert payload["max_runtime_seconds"] == 30
+
+    @pytest.mark.asyncio
+    async def test_auto_id(self, client):
+        sid = await client.submit_task('{}', worker_type="test")
+        assert len(sid) == 12
+
+    @pytest.mark.asyncio
+    async def test_with_user_id(self, client, fake_redis):
+        await client.submit_task(
+            '{}', session_id="st2", worker_type="test", user_id="alice"
+        )
+        payload = json.loads(fake_redis.lists["session:queue:test"][0])
+        assert payload["user_id"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_with_input_files(self, client, fake_redis):
+        await client.submit_task(
+            '{}', session_id="st3", worker_type="test",
+            input_files={"img.png": b"png-data"},
+        )
+        payload = json.loads(fake_redis.lists["session:queue:test"][0])
+        assert base64.b64decode(payload["input_files"]["img.png"]) == b"png-data"
+
+    @pytest.mark.asyncio
+    async def test_custom_runtime(self, client, fake_redis):
+        await client.submit_task(
+            '{}', session_id="st4", worker_type="test", max_runtime_seconds=120,
+        )
+        payload = json.loads(fake_redis.lists["session:queue:test"][0])
+        assert payload["max_runtime_seconds"] == 120
+
+    @pytest.mark.asyncio
+    async def test_clears_stale_keys(self, client, fake_redis):
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
+            await fake_redis.set(f"session:st5:{suffix}", "stale")
+        await fake_redis.hset("session:st5:output_files", "old.txt", "data")
+        await fake_redis.rpush("session:st5:logs:lines", "old line")
+
+        await client.submit_task('{}', session_id="st5", worker_type="test")
+
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
+            assert await fake_redis.get(f"session:st5:{suffix}") is None
+        assert await fake_redis.hgetall("session:st5:output_files") == {}
+        assert await fake_redis.lrange("session:st5:logs:lines", 0, -1) == []
 
 
 class TestWait:
@@ -176,6 +250,7 @@ class TestResult:
         assert result["logs"] == "hello\n"
         assert result["error"] == ""
         assert result["output_files"]["out.txt"] == b"data"
+        assert result["response"] is None
 
     @pytest.mark.asyncio
     async def test_missing_fields(self, client):
@@ -185,6 +260,7 @@ class TestResult:
         assert result["exit_code"] is None
         assert result["error"] == ""
         assert result["output_files"] == {}
+        assert result["response"] is None
 
     @pytest.mark.asyncio
     async def test_multiple_output_files(self, client, fake_redis):
@@ -201,12 +277,20 @@ class TestResult:
         assert result["output_files"]["a.txt"] == b"aaa"
         assert result["output_files"]["b.txt"] == b"bbb"
 
+    @pytest.mark.asyncio
+    async def test_with_response(self, client, fake_redis):
+        await fake_redis.set("session:r4:status", "completed")
+        await fake_redis.set("session:r4:response", '{"result": "ok"}')
+        result = await client.result("r4")
+        assert result["response"] == '{"result": "ok"}'
+
 
 class TestQuota:
     @pytest.mark.asyncio
     async def test_no_usage(self, client, fake_redis):
         q = await client.quota("fresh_user")
         assert q["user_id"] == "fresh_user"
+        assert q["worker_type"] == "python"
         assert q["used_seconds"] == 0.0
         assert q["remaining_seconds"] == 600.0
         assert q["limit_seconds"] == 600
@@ -214,8 +298,8 @@ class TestQuota:
 
     @pytest.mark.asyncio
     async def test_with_usage(self, client, fake_redis):
-        await fake_redis.set("quota:alice", "120.5")
-        await fake_redis.expire("quota:alice", 2400)
+        await fake_redis.set("quota:alice:python", "120.5")
+        await fake_redis.expire("quota:alice:python", 2400)
         q = await client.quota("alice")
         assert q["used_seconds"] == 120.5
         assert q["remaining_seconds"] == 479.5
@@ -223,18 +307,31 @@ class TestQuota:
 
     @pytest.mark.asyncio
     async def test_exceeded(self, client, fake_redis):
-        await fake_redis.set("quota:bob", "700.0")
-        await fake_redis.expire("quota:bob", 1800)
+        await fake_redis.set("quota:bob:python", "700.0")
+        await fake_redis.expire("quota:bob:python", 1800)
         q = await client.quota("bob")
         assert q["used_seconds"] == 700.0
         assert q["remaining_seconds"] == 0.0
 
     @pytest.mark.asyncio
     async def test_reads_server_config(self, client, fake_redis):
-        await fake_redis.set("quota:__config:limit", "300")
-        await fake_redis.set("quota:__config:interval", "1800")
+        await fake_redis.set("quota:__config:rules", "*:300/1800")
         q = await client.quota("new_user")
         assert q["limit_seconds"] == 300
+        assert q["interval_seconds"] == 1800
+
+    @pytest.mark.asyncio
+    async def test_per_type_quota(self, client, fake_redis):
+        """Custom worker type has different quota than python."""
+        await fake_redis.set("quota:__config:rules", "*:600/3600 image:120/1800")
+        await fake_redis.set("quota:alice:image", "50.0")
+        await fake_redis.expire("quota:alice:image", 1200)
+        q = await client.quota("alice", worker_type="image")
+        assert q["worker_type"] == "image"
+        assert q["used_seconds"] == 50.0
+        assert q["limit_seconds"] == 120
+        assert q["interval_seconds"] == 1800
+        assert q["remaining_seconds"] == 70.0
 
 
 class TestStreamLogs:
@@ -262,11 +359,11 @@ class TestStreamLogs:
     @pytest.mark.asyncio
     async def test_timeout(self, client, fake_redis):
         await fake_redis.set("session:sl3:status", "running")
-        import time
+        import time as _time
 
-        start = time.monotonic()
+        start = _time.monotonic()
         lines = [line async for line in client.stream_logs("sl3", timeout=0.5)]
-        elapsed = time.monotonic() - start
+        elapsed = _time.monotonic() - start
         assert lines == []
         assert elapsed < 3
 
@@ -301,3 +398,108 @@ class TestStreamLogs:
         lines = [line async for line in client.stream_logs("sl4", timeout=5)]
         await task
         assert lines == ["ok\n"]
+
+
+class TestWorkers:
+    @pytest.mark.asyncio
+    async def test_no_workers(self, client):
+        workers = await client.workers()
+        assert workers == []
+
+    @pytest.mark.asyncio
+    async def test_lists_workers(self, client, fake_redis):
+        import json as _json
+
+        now = time.time()
+        await fake_redis.hset(
+            "workers", "python:abc123",
+            _json.dumps({
+                "worker_type": "python",
+                "last_heartbeat": now,
+                "pid": 1234,
+            }),
+        )
+        await fake_redis.hset(
+            "workers", "image:def456",
+            _json.dumps({
+                "worker_type": "image",
+                "last_heartbeat": now - 60,  # stale
+                "pid": 5678,
+            }),
+        )
+
+        workers = await client.workers()
+        assert len(workers) == 2
+
+        py_worker = next(w for w in workers if w["worker_type"] == "python")
+        assert py_worker["alive"] is True
+        assert py_worker["key"] == "python:abc123"
+
+        img_worker = next(w for w in workers if w["worker_type"] == "image")
+        assert img_worker["alive"] is False
+
+
+class TestLogLines:
+    @pytest.mark.asyncio
+    async def test_basic(self, client, fake_redis):
+        for line in ["hello\n", "world\n"]:
+            await fake_redis.rpush("session:ll1:logs:lines", line)
+        lines = await client.log_lines("ll1")
+        assert lines == ["hello\n", "world\n"]
+
+    @pytest.mark.asyncio
+    async def test_empty(self, client):
+        lines = await client.log_lines("ll-empty")
+        assert lines == []
+
+    @pytest.mark.asyncio
+    async def test_with_range(self, client, fake_redis):
+        for i in range(10):
+            await fake_redis.rpush("session:ll2:logs:lines", f"line{i}\n")
+        lines = await client.log_lines("ll2", start=-3, stop=-1)
+        assert lines == ["line7\n", "line8\n", "line9\n"]
+
+    @pytest.mark.asyncio
+    async def test_partial_range(self, client, fake_redis):
+        for i in range(5):
+            await fake_redis.rpush("session:ll3:logs:lines", f"L{i}\n")
+        lines = await client.log_lines("ll3", start=1, stop=3)
+        assert lines == ["L1\n", "L2\n", "L3\n"]
+
+
+class TestServices:
+    @pytest.mark.asyncio
+    async def test_no_services(self, client):
+        services = await client.services()
+        assert services == []
+
+    @pytest.mark.asyncio
+    async def test_lists_services(self, client, fake_redis):
+        await fake_redis.hset("services", "python", json.dumps({
+            "worker_type": "python",
+            "type": "python-runner",
+            "description": "General Python execution",
+            "dependencies": ["numpy", "pandas", "matplotlib"],
+        }))
+        await fake_redis.hset("services", "echo", json.dumps({
+            "worker_type": "echo",
+            "type": "task-runner",
+            "task_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
+            "response_schema": {"type": "object", "properties": {"echoed": {"type": "string"}}},
+            "description": "Echo service",
+            "dependencies": ["pydantic"],
+        }))
+
+        services = await client.services()
+        assert len(services) == 2
+
+        py = next(s for s in services if s["worker_type"] == "python")
+        assert py["type"] == "python-runner"
+        assert py["dependencies"] == ["numpy", "pandas", "matplotlib"]
+        assert py["description"] == "General Python execution"
+
+        echo = next(s for s in services if s["worker_type"] == "echo")
+        assert echo["type"] == "task-runner"
+        assert "text" in echo["task_schema"]["properties"]
+        assert echo["description"] == "Echo service"
+        assert echo["dependencies"] == ["pydantic"]

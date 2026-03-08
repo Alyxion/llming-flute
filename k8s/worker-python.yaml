@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-python
+  namespace: flute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-python
+  template:
+    metadata:
+      labels:
+        app: worker-python
+    spec:
+      containers:
+        - name: worker
+          image: YOUR_REGISTRY.azurecr.io/flute-worker:latest
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: flute-redis
+                  key: REDIS_URL
+            - name: WORKER_DIR
+              value: /app/workers/python
+            - name: MAX_CONCURRENT
+              value: "4"
+            - name: OPENBLAS_NUM_THREADS
+              value: "2"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi

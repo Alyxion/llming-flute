@@ -1,0 +1,27 @@
+[project]
+name = "python"
+description = "General-purpose Python execution with scientific, data, and document libraries"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+    "scipy",
+    "scikit-learn",
+    "statsmodels",
+    "sympy",
+    "pillow",
+    "openpyxl",
+    "xlsxwriter",
+    "pdfplumber",
+    "reportlab",
+    "python-docx",
+    "beautifulsoup4",
+    "pyyaml",
+    "tabulate",
+    "chardet",
+]
+
+[tool.flute.worker]
+type = "python-runner"
+description = "General-purpose Python code execution with scientific, data, and document libraries"

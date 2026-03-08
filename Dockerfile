@@ -7,18 +7,24 @@ RUN apt-get update && \
         libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Pre-install scientific Python stack
-RUN pip install --no-cache-dir \
-    numpy pandas matplotlib openpyxl pdfplumber \
-    scipy pillow sympy psutil redis
+# Core dependencies (flute framework)
+RUN pip install --no-cache-dir psutil redis pydantic
+
+# Copy worker directories and install their dependencies
+COPY workers/ /workers/
+COPY scripts/install_worker_deps.py /tmp/install_worker_deps.py
+RUN python /tmp/install_worker_deps.py && rm /tmp/install_worker_deps.py
 
 # Non-root user with HOME=/tmp (writable via tmpfs)
 RUN groupadd -r flute && useradd -r -g flute -d /tmp -s /sbin/nologin flute
 
+# Copy flute framework and worker handler code
 COPY llming_flute/flute/ /app/flute/
+COPY workers/ /app/workers/
 RUN python -m compileall -q /app/flute/
 
 WORKDIR /app
+
 USER flute
 
 ENV PYTHONDONTWRITEBYTECODE=1
