@@ -9,15 +9,16 @@ Require running Docker stack:
 import textwrap
 
 import pytest
-
 from flute.client import SessionClient
 
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def c():
-    return SessionClient()
+@pytest.fixture
+async def c():
+    client = SessionClient()
+    await client._ensure_connected()
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -25,29 +26,32 @@ def c():
 # ---------------------------------------------------------------------------
 
 
-def test_basic_execution(c):
-    sid = c.submit("print('hello world')", session_id="test-basic")
-    res = c.wait(sid)
+@pytest.mark.asyncio
+async def test_basic_execution(c):
+    sid = await c.submit("print('hello world')", session_id="test-basic")
+    res = await c.wait(sid)
     assert res["status"] == "completed"
     assert "hello world" in res["logs"]
 
 
-def test_input_files(c):
+@pytest.mark.asyncio
+async def test_input_files(c):
     code = textwrap.dedent("""\
         with open("input.txt") as f:
             data = f.read()
         with open("output.txt", "w") as f:
             f.write(data.upper())
     """)
-    sid = c.submit(
+    sid = await c.submit(
         code, session_id="test-files", input_files={"input.txt": b"hello from input file"}
     )
-    res = c.wait(sid)
+    res = await c.wait(sid)
     assert res["status"] == "completed"
     assert res["output_files"]["output.txt"] == b"HELLO FROM INPUT FILE"
 
 
-def test_matplotlib_chart(c):
+@pytest.mark.asyncio
+async def test_matplotlib_chart(c):
     code = textwrap.dedent("""\
         import matplotlib
         matplotlib.use("Agg")
@@ -63,15 +67,18 @@ def test_matplotlib_chart(c):
         fig.savefig("chart.png", dpi=150)
         print("chart saved")
     """)
-    sid = c.submit(code, session_id="test-matplotlib", max_runtime_seconds=30, max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(
+        code, session_id="test-matplotlib", max_runtime_seconds=30, max_memory_mb=256
+    )
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     png = res["output_files"]["chart.png"]
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert len(png) > 10_000
 
 
-def test_pandas_csv_analysis(c):
+@pytest.mark.asyncio
+async def test_pandas_csv_analysis(c):
     csv_data = (
         b"name,age,city\nAlice,30,Berlin\nBob,25,Munich\n"
         b"Charlie,35,Berlin\nDiana,28,Hamburg\nEve,32,Berlin"
@@ -83,15 +90,16 @@ def test_pandas_csv_analysis(c):
         summary.reset_index().to_csv("summary.csv", index=False)
         print("done")
     """)
-    sid = c.submit(
+    sid = await c.submit(
         code, session_id="test-pandas", input_files={"people.csv": csv_data}, max_memory_mb=256
     )
-    res = c.wait(sid, timeout=30)
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert "Berlin" in res["output_files"]["summary.csv"].decode()
 
 
-def test_numpy_computation(c):
+@pytest.mark.asyncio
+async def test_numpy_computation(c):
     code = textwrap.dedent("""\
         import numpy as np
         np.random.seed(42)
@@ -101,14 +109,15 @@ def test_numpy_computation(c):
         print(f"C shape: {C.shape}")
         np.save("result.npy", C)
     """)
-    sid = c.submit(code, session_id="test-numpy", max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(code, session_id="test-numpy", max_memory_mb=256)
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert "C shape: (500, 500)" in res["logs"]
     assert "result.npy" in res["output_files"]
 
 
-def test_excel_generation(c):
+@pytest.mark.asyncio
+async def test_excel_generation(c):
     code = textwrap.dedent("""\
         import openpyxl
         from openpyxl.styles import Font, PatternFill
@@ -126,13 +135,14 @@ def test_excel_generation(c):
             ws.cell(row=row_idx, column=4, value=q1+q2)
         wb.save("report.xlsx")
     """)
-    sid = c.submit(code, session_id="test-excel", max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(code, session_id="test-excel", max_memory_mb=256)
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert res["output_files"]["report.xlsx"][:2] == b"PK"
 
 
-def test_multi_plot_report(c):
+@pytest.mark.asyncio
+async def test_multi_plot_report(c):
     code = textwrap.dedent("""\
         import matplotlib
         matplotlib.use("Agg")
@@ -153,14 +163,17 @@ def test_multi_plot_report(c):
         fig.tight_layout()
         fig.savefig("report.png", dpi=150)
     """)
-    sid = c.submit(code, session_id="test-multiplot", max_runtime_seconds=30, max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(
+        code, session_id="test-multiplot", max_runtime_seconds=30, max_memory_mb=256
+    )
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert res["output_files"]["report.png"][:8] == b"\x89PNG\r\n\x1a\n"
     assert len(res["output_files"]["report.png"]) > 30_000
 
 
-def test_image_processing(c):
+@pytest.mark.asyncio
+async def test_image_processing(c):
     code = textwrap.dedent("""\
         from PIL import Image, ImageDraw
         img = Image.new("RGB", (400, 200), color=(30, 30, 30))
@@ -170,13 +183,14 @@ def test_image_processing(c):
         rotated = img.rotate(15, expand=True, fillcolor=(30, 30, 30))
         rotated.save("greeting.png")
     """)
-    sid = c.submit(code, session_id="test-pillow", max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(code, session_id="test-pillow", max_memory_mb=256)
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert res["output_files"]["greeting.png"][:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def test_sympy_math(c):
+@pytest.mark.asyncio
+async def test_sympy_math(c):
     code = textwrap.dedent("""\
         from sympy import symbols, integrate, solve, sin, cos
         x = symbols("x")
@@ -187,22 +201,25 @@ def test_sympy_math(c):
         with open("results.txt","w") as f:
             f.write(f"roots: {roots}\\n")
     """)
-    sid = c.submit(code, session_id="test-sympy", max_runtime_seconds=30, max_memory_mb=256)
-    res = c.wait(sid, timeout=30)
+    sid = await c.submit(
+        code, session_id="test-sympy", max_runtime_seconds=30, max_memory_mb=256
+    )
+    res = await c.wait(sid, timeout=30)
     assert res["status"] == "completed"
     assert "sin^2+cos^2 = 1" in res["logs"]
     assert "[1, 2, 3]" in res["logs"]
     assert "results.txt" in res["output_files"]
 
 
-def test_multiple_output_files(c):
+@pytest.mark.asyncio
+async def test_multiple_output_files(c):
     code = textwrap.dedent("""\
         for i in range(3):
             with open(f"result_{i}.txt", "w") as f:
                 f.write(f"result {i}")
     """)
-    sid = c.submit(code, session_id="test-multi-out")
-    res = c.wait(sid)
+    sid = await c.submit(code, session_id="test-multi-out")
+    res = await c.wait(sid)
     assert res["status"] == "completed"
     assert len(res["output_files"]) == 3
 
@@ -212,16 +229,18 @@ def test_multiple_output_files(c):
 # ---------------------------------------------------------------------------
 
 
-def test_syntax_error(c):
-    sid = c.submit("def foo(\n", session_id="test-syntax")
-    res = c.wait(sid)
+@pytest.mark.asyncio
+async def test_syntax_error(c):
+    sid = await c.submit("def foo(\n", session_id="test-syntax")
+    res = await c.wait(sid)
     assert res["status"] == "error"
     assert "SyntaxError" in res["logs"]
 
 
-def test_exception(c):
-    sid = c.submit("raise ValueError('test error')", session_id="test-exception")
-    res = c.wait(sid)
+@pytest.mark.asyncio
+async def test_exception(c):
+    sid = await c.submit("raise ValueError('test error')", session_id="test-exception")
+    res = await c.wait(sid)
     assert res["status"] == "error"
     assert "test error" in res["logs"]
 
@@ -231,7 +250,8 @@ def test_exception(c):
 # ---------------------------------------------------------------------------
 
 
-def test_bust_disk_single_large_file(c):
+@pytest.mark.asyncio
+async def test_bust_disk_single_large_file(c):
     code = textwrap.dedent("""\
         with open("bigfile.bin", "wb") as f:
             for i in range(500):
@@ -239,26 +259,32 @@ def test_bust_disk_single_large_file(c):
                 f.flush()
         print("SHOULD NOT REACH HERE")
     """)
-    sid = c.submit(code, session_id="test-bust-disk-single", max_disk_mb=10, max_runtime_seconds=30)
-    res = c.wait(sid, timeout=35)
+    sid = await c.submit(
+        code, session_id="test-bust-disk-single", max_disk_mb=10, max_runtime_seconds=30
+    )
+    res = await c.wait(sid, timeout=35)
     assert res["status"] in ("killed", "error")
     assert "SHOULD NOT REACH HERE" not in res["logs"]
 
 
-def test_bust_disk_many_small_files(c):
+@pytest.mark.asyncio
+async def test_bust_disk_many_small_files(c):
     code = textwrap.dedent("""\
         for i in range(200):
             with open(f"chunk_{i:04d}.bin", "wb") as f:
                 f.write(b"Y" * (1024 * 1024))
         print("SHOULD NOT REACH HERE")
     """)
-    sid = c.submit(code, session_id="test-bust-disk-many", max_disk_mb=10, max_runtime_seconds=30)
-    res = c.wait(sid, timeout=35)
+    sid = await c.submit(
+        code, session_id="test-bust-disk-many", max_disk_mb=10, max_runtime_seconds=30
+    )
+    res = await c.wait(sid, timeout=35)
     assert res["status"] in ("killed", "error")
     assert "SHOULD NOT REACH HERE" not in res["logs"]
 
 
-def test_bust_disk_nested_dirs(c):
+@pytest.mark.asyncio
+async def test_bust_disk_nested_dirs(c):
     code = textwrap.dedent("""\
         import os, time
         for depth in range(50):
@@ -270,25 +296,27 @@ def test_bust_disk_nested_dirs(c):
             time.sleep(0.05)
         print("SHOULD NOT REACH HERE")
     """)
-    sid = c.submit(code, session_id="test-bust-disk-nested", max_disk_mb=10, max_runtime_seconds=30)
-    res = c.wait(sid, timeout=35)
+    sid = await c.submit(
+        code, session_id="test-bust-disk-nested", max_disk_mb=10, max_runtime_seconds=30
+    )
+    res = await c.wait(sid, timeout=35)
     assert res["status"] in ("killed", "error")
     assert "SHOULD NOT REACH HERE" not in res["logs"]
 
 
-def test_bust_disk_tmpfs_preserved(c):
-    # First: bust attempt
+@pytest.mark.asyncio
+async def test_bust_disk_tmpfs_preserved(c):
     bust_code = textwrap.dedent("""\
         with open("bigfile.bin", "wb") as f:
             for i in range(100):
                 f.write(b"A" * (1024 * 1024))
                 f.flush()
     """)
-    sid1 = c.submit(bust_code, session_id="test-disk-cleanup-bust", max_disk_mb=5,
-                    max_runtime_seconds=15)
-    c.wait(sid1, timeout=20)
+    sid1 = await c.submit(
+        bust_code, session_id="test-disk-cleanup-bust", max_disk_mb=5, max_runtime_seconds=15
+    )
+    await c.wait(sid1, timeout=20)
 
-    # Then: verify cleanup
     check_code = textwrap.dedent("""\
         import shutil
         usage = shutil.disk_usage("/tmp")
@@ -296,8 +324,10 @@ def test_bust_disk_tmpfs_preserved(c):
         assert used_mb < 50, f"tmpfs not cleaned: {used_mb:.1f} MB"
         print("DISK CLEAN")
     """)
-    sid2 = c.submit(check_code, session_id="test-disk-cleanup-verify", max_memory_mb=256)
-    res2 = c.wait(sid2, timeout=15)
+    sid2 = await c.submit(
+        check_code, session_id="test-disk-cleanup-verify", max_memory_mb=256
+    )
+    res2 = await c.wait(sid2, timeout=15)
     assert res2["status"] == "completed"
     assert "DISK CLEAN" in res2["logs"]
 
@@ -307,21 +337,24 @@ def test_bust_disk_tmpfs_preserved(c):
 # ---------------------------------------------------------------------------
 
 
-def test_bust_memory_fast_alloc(c):
+@pytest.mark.asyncio
+async def test_bust_memory_fast_alloc(c):
     code = textwrap.dedent("""\
         blocks = []
         for i in range(200):
             blocks.append(bytearray(10 * 1024 * 1024))
         print("SHOULD NOT REACH HERE")
     """)
-    sid = c.submit(code, session_id="test-bust-mem-fast", max_memory_mb=64,
-                   max_runtime_seconds=15)
-    res = c.wait(sid, timeout=20)
+    sid = await c.submit(
+        code, session_id="test-bust-mem-fast", max_memory_mb=64, max_runtime_seconds=15
+    )
+    res = await c.wait(sid, timeout=20)
     assert res["status"] in ("killed", "error")
     assert "SHOULD NOT REACH HERE" not in res["logs"]
 
 
-def test_bust_memory_mmap(c):
+@pytest.mark.asyncio
+async def test_bust_memory_mmap(c):
     code = textwrap.dedent("""\
         import mmap
         maps = []
@@ -331,9 +364,10 @@ def test_bust_memory_mmap(c):
             maps.append(m)
         print("SHOULD NOT REACH HERE")
     """)
-    sid = c.submit(code, session_id="test-bust-mem-mmap", max_memory_mb=64,
-                   max_runtime_seconds=15)
-    res = c.wait(sid, timeout=20)
+    sid = await c.submit(
+        code, session_id="test-bust-mem-mmap", max_memory_mb=64, max_runtime_seconds=15
+    )
+    res = await c.wait(sid, timeout=20)
     assert res["status"] in ("killed", "error")
     assert "SHOULD NOT REACH HERE" not in res["logs"]
 
@@ -343,23 +377,26 @@ def test_bust_memory_mmap(c):
 # ---------------------------------------------------------------------------
 
 
-def test_bust_loop_busy_spin(c):
+@pytest.mark.asyncio
+async def test_bust_loop_busy_spin(c):
     code = "i = 0\nwhile True:\n    i += 1"
-    sid = c.submit(code, session_id="test-bust-loop-spin", max_runtime_seconds=3)
-    res = c.wait(sid, timeout=15)
+    sid = await c.submit(code, session_id="test-bust-loop-spin", max_runtime_seconds=3)
+    res = await c.wait(sid, timeout=15)
     assert res["status"] == "killed"
     assert "runtime" in res["error"].lower()
 
 
-def test_bust_loop_sleep(c):
+@pytest.mark.asyncio
+async def test_bust_loop_sleep(c):
     code = "import time\nwhile True:\n    time.sleep(0.01)"
-    sid = c.submit(code, session_id="test-bust-loop-sleep", max_runtime_seconds=3)
-    res = c.wait(sid, timeout=15)
+    sid = await c.submit(code, session_id="test-bust-loop-sleep", max_runtime_seconds=3)
+    res = await c.wait(sid, timeout=15)
     assert res["status"] == "killed"
     assert "runtime" in res["error"].lower()
 
 
-def test_bust_loop_fork_bomb(c):
+@pytest.mark.asyncio
+async def test_bust_loop_fork_bomb(c):
     code = textwrap.dedent("""\
         import subprocess, sys
         children = []
@@ -372,14 +409,17 @@ def test_bust_loop_fork_bomb(c):
                 break
         print(f"spawned {len(children)} children")
     """)
-    sid = c.submit(code, session_id="test-bust-fork", max_runtime_seconds=10, max_memory_mb=256)
-    res = c.wait(sid, timeout=20)
+    sid = await c.submit(
+        code, session_id="test-bust-fork", max_runtime_seconds=10, max_memory_mb=256
+    )
+    res = await c.wait(sid, timeout=20)
     assert res["status"] in ("killed", "error", "completed")
     if res["status"] == "completed":
         assert "fork blocked" in res["logs"]
 
 
-def test_bust_loop_subprocess_chain(c):
+@pytest.mark.asyncio
+async def test_bust_loop_subprocess_chain(c):
     code = textwrap.dedent("""\
         import subprocess, sys
         subprocess.Popen(
@@ -388,6 +428,173 @@ def test_bust_loop_subprocess_chain(c):
         )
         import time; time.sleep(999)
     """)
-    sid = c.submit(code, session_id="test-bust-orphan", max_runtime_seconds=3)
-    res = c.wait(sid, timeout=15)
+    sid = await c.submit(code, session_id="test-bust-orphan", max_runtime_seconds=3)
+    res = await c.wait(sid, timeout=15)
     assert res["status"] in ("killed", "error")
+
+
+# ---------------------------------------------------------------------------
+# Quota tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quota_fresh_user_has_full_budget(c):
+    """A new user with no prior usage has full quota available."""
+    q = await c.quota("quota-fresh")
+    assert q["user_id"] == "quota-fresh"
+    assert q["used_seconds"] == 0.0
+    assert q["remaining_seconds"] == q["limit_seconds"]
+    assert q["resets_in_seconds"] == -1
+
+
+@pytest.mark.asyncio
+async def test_quota_tracks_usage(c):
+    """Running a session charges the user's quota."""
+    user = "quota-track"
+    # Clear any previous quota
+    await c.r.delete(f"quota:{user}")
+
+    sid = await c.submit(
+        "import time; time.sleep(1); print('done')",
+        session_id="test-quota-track",
+        user_id=user,
+        max_runtime_seconds=10,
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "completed"
+
+    q = await c.quota(user)
+    assert q["used_seconds"] >= 1.0
+    assert q["remaining_seconds"] < q["limit_seconds"]
+    assert q["resets_in_seconds"] > 0
+
+
+@pytest.mark.asyncio
+async def test_quota_accumulates_across_sessions(c):
+    """Multiple sessions accumulate usage under the same user."""
+    user = "quota-accum"
+    await c.r.delete(f"quota:{user}")
+
+    for i in range(3):
+        sid = await c.submit(
+            "import time; time.sleep(0.5)",
+            session_id=f"test-quota-accum-{i}",
+            user_id=user,
+            max_runtime_seconds=10,
+        )
+        await c.wait(sid, timeout=10)
+
+    q = await c.quota(user)
+    assert q["used_seconds"] >= 1.5
+
+
+@pytest.mark.asyncio
+async def test_quota_exceeded_rejects_session(c):
+    """When quota is exhausted, the session is immediately rejected."""
+    user = "quota-exceeded"
+    # Artificially exhaust the quota
+    limit = int(await c.r.get("quota:__config:limit") or 600)
+    await c.r.set(f"quota:{user}", str(limit + 100))
+    await c.r.expire(f"quota:{user}", 3600)
+
+    sid = await c.submit(
+        "print('should not run')",
+        session_id="test-quota-exceeded",
+        user_id=user,
+    )
+    res = await c.wait(sid, timeout=10)
+
+    # --- assert well-defined rejection response ---
+    assert res["status"] == "quota_exceeded"
+    assert res["exit_code"] is None  # no process was spawned
+    assert res["logs"] == ""  # no output
+    assert res["output_files"] == {}  # no files
+    assert "quota exceeded" in res["error"].lower()
+    # Error message contains usage and limit info
+    assert str(limit) in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_quota_exceeded_shows_in_quota_query(c):
+    """client.quota() reflects the exceeded state."""
+    user = "quota-exceeded-query"
+    limit = int(await c.r.get("quota:__config:limit") or 600)
+    await c.r.set(f"quota:{user}", str(limit + 50))
+    await c.r.expire(f"quota:{user}", 1800)
+
+    q = await c.quota(user)
+    assert q["used_seconds"] >= limit
+    assert q["remaining_seconds"] == 0.0
+    assert q["resets_in_seconds"] > 0
+
+
+@pytest.mark.asyncio
+async def test_quota_no_user_id_bypasses_quota(c):
+    """Sessions without user_id are not subject to quota."""
+    sid = await c.submit(
+        "print('no quota')",
+        session_id="test-quota-bypass",
+    )
+    res = await c.wait(sid, timeout=10)
+    assert res["status"] == "completed"
+    assert "no quota" in res["logs"]
+
+
+@pytest.mark.asyncio
+async def test_quota_independent_per_user(c):
+    """Different users have independent quota counters."""
+    user_a, user_b = "quota-indep-a", "quota-indep-b"
+    for u in (user_a, user_b):
+        await c.r.delete(f"quota:{u}")
+
+    # Only user_a runs a session
+    sid = await c.submit(
+        "import time; time.sleep(1)",
+        session_id="test-quota-indep",
+        user_id=user_a,
+        max_runtime_seconds=10,
+    )
+    await c.wait(sid, timeout=15)
+
+    qa = await c.quota(user_a)
+    qb = await c.quota(user_b)
+    assert qa["used_seconds"] >= 1.0
+    assert qb["used_seconds"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_quota_charged_on_killed_session(c):
+    """Quota is charged even when a session is killed for exceeding limits."""
+    user = "quota-killed"
+    await c.r.delete(f"quota:{user}")
+
+    sid = await c.submit(
+        "import time; time.sleep(60)",
+        session_id="test-quota-killed",
+        user_id=user,
+        max_runtime_seconds=2,
+    )
+    res = await c.wait(sid, timeout=15)
+    assert res["status"] == "killed"
+
+    q = await c.quota(user)
+    assert q["used_seconds"] >= 2.0
+
+
+@pytest.mark.asyncio
+async def test_quota_charged_on_error_session(c):
+    """Quota is charged even when the session code raises an error."""
+    user = "quota-error"
+    await c.r.delete(f"quota:{user}")
+
+    sid = await c.submit(
+        "raise RuntimeError('boom')",
+        session_id="test-quota-error",
+        user_id=user,
+    )
+    res = await c.wait(sid, timeout=10)
+    assert res["status"] == "error"
+
+    q = await c.quota(user)
+    assert q["used_seconds"] > 0

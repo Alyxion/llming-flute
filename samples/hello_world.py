@@ -1,12 +1,20 @@
 """Basic example: submit code and get the result."""
 
+import asyncio
+import os
+
 from flute import SessionClient
 
-c = SessionClient("redis://localhost:6399/0")
 
-sid = c.submit("print('Hello from the sandbox!')")
-result = c.wait(sid)
+async def main():
+    c = SessionClient(os.environ.get("REDIS_URL", "redis://localhost:6399/0"))
 
-print(f"Status:    {result['status']}")
-print(f"Exit code: {result['exit_code']}")
-print(f"Output:    {result['logs']}")
+    sid = await c.submit("print('Hello from the sandbox!')")
+    result = await c.wait(sid)
+
+    print(f"Status:    {result['status']}")
+    print(f"Exit code: {result['exit_code']}")
+    print(f"Output:    {result['logs']}")
+
+
+asyncio.run(main())

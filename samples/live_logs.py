@@ -1,12 +1,16 @@
 """Example: stream stdout from a running session in real time."""
 
+import asyncio
+import os
 import sys
 
 from flute import SessionClient
 
-c = SessionClient("redis://localhost:6399/0")
 
-code = """\
+async def main():
+    c = SessionClient(os.environ.get("REDIS_URL", "redis://localhost:6399/0"))
+
+    code = """\
 import time
 
 print("Starting computation...")
@@ -18,13 +22,15 @@ for i in range(1, 11):
 print("Done!")
 """
 
-sid = c.submit(code, max_runtime_seconds=30)
-print(f"Session {sid} submitted. Streaming logs:\n")
+    sid = await c.submit(code, max_runtime_seconds=30)
+    print(f"Session {sid} submitted. Streaming logs:\n")
 
-for line in c.stream_logs(sid, timeout=30):
-    sys.stdout.write(line)
-    sys.stdout.flush()
+    async for line in c.stream_logs(sid, timeout=30):
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
-# Fetch final result
-result = c.result(sid)
-print(f"\nFinal status: {result['status']} (exit code {result['exit_code']})")
+    result = await c.result(sid)
+    print(f"\nFinal status: {result['status']} (exit code {result['exit_code']})")
+
+
+asyncio.run(main())

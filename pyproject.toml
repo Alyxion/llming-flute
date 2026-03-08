@@ -17,6 +17,7 @@ packages = [{include = "flute", from = "llming_flute"}]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
+pytest-asyncio = ">=0.25"
 pytest-cov = ">=6.0"
 ruff = ">=0.9"
 
@@ -33,6 +34,7 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
     "integration: requires running Docker stack (deselect with '-m not integration')",
 ]
