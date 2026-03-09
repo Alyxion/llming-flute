@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flute Editor</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/dracula.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/hint/show-hint.min.css">
+<style>
+:root {
+  --bg: #1e1e2e; --bg2: #262637; --bg3: #313244; --border: #45475a;
+  --text: #cdd6f4; --muted: #6c7086; --blue: #89b4fa; --green: #a6e3a1;
+  --red: #f38ba8; --yellow: #f9e2af; --surface: #2a2b3d;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 16px; padding: 8px 16px;
+  background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+header h1 { font-size: 16px; font-weight: 600; color: var(--blue); white-space: nowrap; }
+.controls { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.controls label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+.controls select { background: var(--bg3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+#run-btn { background: var(--green); color: #1e1e2e; border: none; border-radius: 6px;
+  padding: 6px 18px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all .15s; }
+#run-btn:hover { filter: brightness(1.1); }
+#run-btn:disabled { background: var(--muted); cursor: wait; }
+#run-btn.running { background: var(--yellow); }
+main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; }
+#editor-panel { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+#editor-panel .CodeMirror { flex: 1; font-size: 13px; line-height: 1.5; }
+#side-panel { display: flex; flex-direction: column; overflow-y: auto; }
+.section { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.section h3 small { text-transform: none; letter-spacing: normal; font-weight: 400; }
+.params-editor .CodeMirror { height: 120px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; }
+#drop-zone { border: 2px dashed var(--border); border-radius: 6px; padding: 14px;
+  text-align: center; color: var(--muted); font-size: 12px; cursor: pointer; transition: all .15s; }
+#drop-zone:hover, #drop-zone.dragover { border-color: var(--blue); color: var(--blue); }
+.file-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg3);
+  border-radius: 4px; padding: 3px 8px; margin: 4px 4px 0 0; font-size: 12px; }
+.file-chip button { background: none; border: none; color: var(--red); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; }
+#status-bar { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.running { background: var(--yellow); animation: pulse 1s infinite; }
+.dot.completed { background: var(--green); }
+.dot.error, .dot.killed { background: var(--red); }
+.dot.idle { background: var(--muted); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+#logs-box { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 8px; font-family: 'SF Mono', Consolas, monospace; font-size: 12px;
+  white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; min-height: 40px; color: var(--text); }
+.result-json { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 8px; font-family: 'SF Mono', Consolas, monospace; font-size: 12px;
+  white-space: pre-wrap; max-height: 200px; overflow-y: auto; margin-bottom: 8px; color: var(--green); }
+.error-text { color: var(--red); }
+.output-file { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+.output-file .fname { color: var(--blue); flex: 1; }
+.output-file button { background: var(--bg3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+.output-file button:hover { border-color: var(--blue); }
+.output-img { max-width: 100%; border-radius: 4px; margin: 6px 0; border: 1px solid var(--border); }
+.output-text { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px; font-size: 11px; max-height: 150px; overflow-y: auto;
+  font-family: monospace; white-space: pre-wrap; margin: 4px 0; }
+.hidden { display: none; }
+.CodeMirror-hints { z-index: 100; }
+
+/* --- Tabs --- */
+#tab-bar { display: flex; align-items: center; background: var(--bg2); border-bottom: 1px solid var(--border);
+  flex-shrink: 0; overflow-x: auto; padding: 0 4px; gap: 2px; min-height: 32px; }
+#tab-bar::-webkit-scrollbar { height: 3px; }
+#tab-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.tab { display: flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 12px;
+  color: var(--muted); cursor: pointer; border-radius: 4px 4px 0 0; white-space: nowrap;
+  border: 1px solid transparent; border-bottom: none; user-select: none; flex-shrink: 0; }
+.tab:hover { color: var(--text); background: var(--bg3); }
+.tab.active { color: var(--text); background: var(--bg); border-color: var(--border); }
+.tab .close-tab { background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; margin-left: 2px; }
+.tab .close-tab:hover { color: var(--red); }
+.tab-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.tab-name-input { background: var(--bg); color: var(--text); border: 1px solid var(--blue);
+  border-radius: 2px; font-size: 12px; padding: 0 4px; width: 120px; outline: none; }
+#add-tab { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px;
+  padding: 4px 8px; line-height: 1; flex-shrink: 0; }
+#add-tab:hover { color: var(--green); }
+#status-footer { display: flex; align-items: center; gap: 12px; padding: 3px 14px;
+  background: var(--bg2); border-top: 1px solid var(--border); flex-shrink: 0;
+  font-size: 11px; color: var(--muted); font-family: 'SF Mono', Consolas, monospace; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Flute</h1>
+  <div class="controls">
+    <label>Memory <select id="memory">
+      <option value="128">128 MB</option>
+      <option value="256">256 MB</option>
+      <option value="512" selected>512 MB</option>
+      <option value="1024">1 GB</option>
+    </select></label>
+    <label>Timeout <select id="timeout">
+      <option value="10">10s</option>
+      <option value="30" selected>30s</option>
+      <option value="60">60s</option>
+      <option value="120">120s</option>
+      <option value="300">5m</option>
+    </select></label>
+    <button id="run-btn" onclick="runCode()">Run</button>
+  </div>
+</header>
+
+<div id="tab-bar">
+  <button id="add-tab" onclick="createTab()" title="New tab">+</button>
+</div>
+
+<main>
+  <div id="editor-panel">
+    <textarea id="code">import json, os
+
+# Read parameters from the side panel
+params = json.load(open('input.json')) if os.path.exists('input.json') else {}
+print(f"Params: {params}")
+
+# Your code here...
+result = {"message": "Hello from Flute!", "echo": params}
+
+# Write result (shown in the output panel)
+json.dump(result, open('output.json', 'w'))
+print("Done!")
+</textarea>
+  </div>
+  <div id="side-panel">
+    <div class="section">
+      <h3>Parameters <small>input.json</small></h3>
+      <div class="params-editor"><textarea id="params">{"name": "world"}</textarea></div>
+    </div>
+    <div class="section">
+      <h3>Input Files</h3>
+      <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+        Drop files here or click to browse
+      </div>
+      <input type="file" id="file-input" multiple class="hidden">
+      <div id="file-list"></div>
+    </div>
+    <div class="section" id="output-section">
+      <h3>Output</h3>
+      <div id="status-bar"><span class="dot idle"></span> <span id="status-text">Ready</span></div>
+      <div id="result-box" class="hidden"></div>
+      <div id="error-box" class="hidden"></div>
+      <div id="logs-box"></div>
+      <div id="output-files" class="hidden"></div>
+    </div>
+  </div>
+</main>
+
+<div id="status-footer"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/python/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/hint/show-hint.min.js"></script>
+<script>
+// --- State ---
+const attachedFiles = {};
+let currentSid = null;
+let polling = false;
+
+// --- IndexedDB persistence ---
+const DB_NAME = 'flute-editor';
+const DB_VERSION = 1;
+let db = null;
+let tabs = [];       // [{id, name, code, params}]
+let activeTabId = null;
+let saveTimer = null;
+
+const DEFAULT_CODE = `import json, os
+
+# Read parameters from the side panel
+params = json.load(open('input.json')) if os.path.exists('input.json') else {}
+print(f"Params: {params}")
+
+# Your code here...
+result = {"message": "Hello from Flute!", "echo": params}
+
+# Write result (shown in the output panel)
+json.dump(result, open('output.json', 'w'))
+print("Done!")`;
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains('state')) d.createObjectStore('state');
+    };
+    req.onsuccess = () => { db = req.result; resolve(db); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbGet(key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('state', 'readonly');
+    const req = tx.objectStore('state').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function dbPut(key, val) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('state', 'readwrite');
+    const req = tx.objectStore('state').put(val, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function makeTabId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+function saveCurrentTabContent() {
+  const tab = tabs.find(t => t.id === activeTabId);
+  if (tab) {
+    tab.code = codeEditor.getValue();
+    tab.params = paramsEditor.getValue();
+  }
+}
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(persistState, 500);
+}
+
+async function persistState() {
+  if (!db) return;
+  saveCurrentTabContent();
+  await dbPut('tabs', tabs);
+  await dbPut('activeTabId', activeTabId);
+}
+
+function renderTabs() {
+  const bar = document.getElementById('tab-bar');
+  const addBtn = document.getElementById('add-tab');
+  // Remove existing tab elements (keep add button)
+  bar.querySelectorAll('.tab').forEach(el => el.remove());
+  for (const tab of tabs) {
+    const el = document.createElement('div');
+    el.className = 'tab' + (tab.id === activeTabId ? ' active' : '');
+    el.innerHTML = `<span class="tab-name">${esc(tab.name)}</span>` +
+      (tabs.length > 1 ? `<button class="close-tab" title="Close">&times;</button>` : '');
+    el.querySelector('.tab-name').addEventListener('click', () => switchTab(tab.id));
+    el.querySelector('.tab-name').addEventListener('dblclick', (e) => { e.stopPropagation(); startRename(tab.id, el); });
+    const closeBtn = el.querySelector('.close-tab');
+    if (closeBtn) closeBtn.addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab.id); });
+    bar.insertBefore(el, addBtn);
+  }
+}
+
+function switchTab(id) {
+  if (id === activeTabId) return;
+  saveCurrentTabContent();
+  activeTabId = id;
+  const tab = tabs.find(t => t.id === id);
+  if (tab) {
+    codeEditor.setValue(tab.code);
+    paramsEditor.setValue(tab.params);
+  }
+  renderTabs();
+  scheduleSave();
+}
+
+function createTab(name, code, params) {
+  saveCurrentTabContent();
+  const id = makeTabId();
+  const n = name || `script${tabs.length + 1}.py`;
+  tabs.push({ id, name: n, code: code || '', params: params || '{}' });
+  activeTabId = id;
+  codeEditor.setValue(tabs[tabs.length - 1].code);
+  paramsEditor.setValue(tabs[tabs.length - 1].params);
+  renderTabs();
+  scheduleSave();
+}
+
+function closeTab(id) {
+  if (tabs.length <= 1) return;
+  const idx = tabs.findIndex(t => t.id === id);
+  if (idx < 0) return;
+  tabs.splice(idx, 1);
+  if (activeTabId === id) {
+    const newIdx = Math.min(idx, tabs.length - 1);
+    activeTabId = tabs[newIdx].id;
+    codeEditor.setValue(tabs[newIdx].code);
+    paramsEditor.setValue(tabs[newIdx].params);
+  }
+  renderTabs();
+  scheduleSave();
+}
+
+function startRename(id, tabEl) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+  const nameSpan = tabEl.querySelector('.tab-name');
+  const input = document.createElement('input');
+  input.className = 'tab-name-input';
+  input.value = tab.name;
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+  const finish = () => {
+    const val = input.value.trim() || tab.name;
+    tab.name = val;
+    renderTabs();
+    scheduleSave();
+  };
+  input.addEventListener('blur', finish);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = tab.name; input.blur(); }
+  });
+}
+
+// --- CodeMirror editors ---
+const PYTHON_WORDS = [
+  'import','from','def','class','return','if','elif','else','for','while','try','except',
+  'finally','with','as','yield','lambda','pass','break','continue','raise','True','False',
+  'None','and','or','not','in','is','global','nonlocal','assert','del','async','await',
+  'print','len','range','int','float','str','list','dict','set','tuple','bool','type',
+  'isinstance','hasattr','getattr','setattr','open','input','sorted','reversed','enumerate',
+  'zip','map','filter','sum','min','max','abs','round','any','all','next','iter','super',
+  'Exception','ValueError','TypeError','KeyError','IndexError','RuntimeError','FileNotFoundError',
+  'json','os','sys','math','re','time','datetime','collections','itertools','functools',
+  'pathlib','io','csv','base64','hashlib','random','statistics','copy','pprint','textwrap',
+  'numpy','np','pandas','pd','matplotlib','pyplot','plt','scipy','sklearn','seaborn','sns',
+  'statsmodels','sympy','PIL','Image','openpyxl','xlsxwriter','pdfplumber',
+  'reportlab','docx','bs4','BeautifulSoup','yaml','tabulate','chardet',
+  'DataFrame','Series','array','zeros','ones','linspace','arange','read_csv','read_excel',
+  'to_csv','to_excel','figure','subplot','savefig','show','fit','predict','transform',
+];
+
+// Dot-completions: what to suggest after "module."
+const DOT = {
+  os: ['path','listdir','getcwd','chdir','mkdir','makedirs','remove','rename','rmdir',
+    'walk','environ','getenv','sep','linesep','cpu_count','getpid','system','stat',
+    'path.join','path.exists','path.dirname','path.basename','path.splitext','path.abspath',
+    'path.isfile','path.isdir','path.getsize'],
+  sys: ['argv','path','stdin','stdout','stderr','exit','version','platform','modules','executable'],
+  json: ['load','loads','dump','dumps','JSONDecodeError'],
+  math: ['pi','e','sqrt','ceil','floor','log','log2','log10','sin','cos','tan','asin','acos',
+    'atan','atan2','exp','pow','fabs','factorial','gcd','isnan','isinf','radians','degrees'],
+  re: ['match','search','findall','finditer','sub','subn','split','compile','Pattern',
+    'IGNORECASE','MULTILINE','DOTALL','VERBOSE'],
+  time: ['time','sleep','monotonic','perf_counter','strftime','localtime','gmtime','mktime'],
+  datetime: ['datetime','date','time','timedelta','timezone','now','today','utcnow',
+    'strptime','strftime','fromtimestamp','isoformat'],
+  random: ['random','randint','randrange','choice','choices','shuffle','sample','seed',
+    'uniform','gauss','normalvariate'],
+  pathlib: ['Path','PurePath','PosixPath','WindowsPath'],
+  collections: ['Counter','defaultdict','OrderedDict','namedtuple','deque','ChainMap'],
+  itertools: ['chain','combinations','permutations','product','repeat','cycle','islice',
+    'zip_longest','groupby','accumulate','starmap','count'],
+  functools: ['reduce','partial','lru_cache','cache','wraps','total_ordering'],
+  csv: ['reader','writer','DictReader','DictWriter','QUOTE_ALL','QUOTE_MINIMAL'],
+  statistics: ['mean','median','mode','stdev','variance','quantiles','correlation'],
+  hashlib: ['md5','sha1','sha256','sha512','new'],
+  io: ['StringIO','BytesIO','TextIOWrapper','BufferedReader'],
+  base64: ['b64encode','b64decode','urlsafe_b64encode','urlsafe_b64decode'],
+  copy: ['copy','deepcopy'],
+  string: ['ascii_letters','ascii_lowercase','ascii_uppercase','digits','punctuation'],
+  textwrap: ['wrap','fill','dedent','indent','shorten'],
+  pprint: ['pprint','pformat','PrettyPrinter'],
+  // numpy / np
+  np: ['array','zeros','ones','empty','arange','linspace','logspace','eye','identity',
+    'random','reshape','concatenate','stack','vstack','hstack','split','sort','argsort',
+    'where','argmax','argmin','mean','std','var','sum','min','max','dot','matmul',
+    'transpose','flatten','squeeze','expand_dims','clip','abs','sqrt','exp','log','log2',
+    'log10','sin','cos','tan','pi','e','inf','nan','isnan','isinf','unique','histogram',
+    'meshgrid','mgrid','ogrid','poly1d','polyfit','polyval','linalg','fft','float32',
+    'float64','int32','int64','bool_','ndarray','dtype','shape','newaxis','loadtxt','savetxt',
+    'save','load','savez'],
+  numpy: null, // alias -> np
+  // pandas / pd
+  pd: ['DataFrame','Series','read_csv','read_excel','read_json','read_sql','read_parquet',
+    'read_html','read_clipboard','concat','merge','pivot_table','crosstab','cut','qcut',
+    'to_datetime','to_numeric','date_range','period_range','Timestamp','Timedelta','NaT',
+    'isna','notna','get_dummies','melt','wide_to_long','Categorical','Grouper','Index',
+    'MultiIndex','RangeIndex','ExcelWriter','HDFStore','set_option','reset_option',
+    'describe_option','option_context'],
+  pandas: null, // alias -> pd
+  // matplotlib.pyplot / plt
+  plt: ['figure','subplots','subplot','plot','scatter','bar','barh','hist','pie','boxplot',
+    'violinplot','heatmap','contour','contourf','imshow','pcolormesh','fill_between',
+    'errorbar','stem','step','stackplot','xlabel','ylabel','title','legend','grid',
+    'xlim','ylim','xticks','yticks','colorbar','tight_layout','savefig','show','close',
+    'clf','cla','gcf','gca','text','annotate','axhline','axvline','axhspan','axvspan',
+    'twinx','twiny','suptitle','subplot2grid','style','rcParams','cm'],
+  matplotlib: ['pyplot','figure','axes','colors','cm','patches','lines','collections',
+    'animation','gridspec','ticker','dates','image','transforms','style','rcParams'],
+  // scipy
+  scipy: ['optimize','integrate','interpolate','linalg','signal','sparse','spatial',
+    'stats','fft','ndimage','special','io','cluster','constants'],
+  // sklearn
+  sklearn: ['linear_model','tree','ensemble','svm','neighbors','cluster','decomposition',
+    'preprocessing','model_selection','metrics','pipeline','feature_extraction',
+    'feature_selection','datasets','utils','base','neural_network','naive_bayes',
+    'manifold','impute','compose','multiclass','multioutput','calibration'],
+  // seaborn / sns
+  sns: ['set_theme','set_style','set_palette','set_context','color_palette',
+    'lineplot','scatterplot','barplot','countplot','boxplot','violinplot','stripplot',
+    'swarmplot','pointplot','catplot','lmplot','regplot','residplot','heatmap','clustermap',
+    'pairplot','jointplot','displot','histplot','kdeplot','ecdfplot','rugplot',
+    'FacetGrid','PairGrid','JointGrid','load_dataset','despine'],
+  seaborn: null, // alias -> sns
+  // statsmodels
+  statsmodels: ['api','formula','tsa','regression','discrete','genmod','robust',
+    'nonparametric','stats','graphics','iolib','tools','OLS','WLS','GLS','Logit','Probit'],
+  // sympy
+  sympy: ['Symbol','symbols','Rational','Integer','pi','E','I','oo','nan','sqrt','cbrt',
+    'exp','log','sin','cos','tan','asin','acos','atan','simplify','expand','factor',
+    'collect','cancel','apart','trigsimp','powsimp','solve','dsolve','integrate',
+    'diff','limit','series','summation','product','Matrix','det','inv','eigenvals',
+    'latex','pprint','init_printing','Eq','Ne','Lt','Le','Gt','Ge','And','Or','Not',
+    'Function','Lambda','Piecewise','Derivative','Integral','Sum','Product'],
+  // PIL / Image
+  PIL: ['Image','ImageDraw','ImageFont','ImageFilter','ImageEnhance','ImageOps',
+    'ImageChops','ImageColor','ImageStat','ExifTags'],
+  Image: ['open','new','fromarray','frombytes','merge','blend','composite','alpha_composite',
+    'resize','rotate','crop','transpose','filter','convert','save','show','thumbnail',
+    'paste','split','getchannel','getpixel','putpixel','size','mode','format','info',
+    'LANCZOS','BILINEAR','BICUBIC','NEAREST','Resampling'],
+  // other libs
+  openpyxl: ['Workbook','load_workbook','utils','styles','chart','drawing','formatting'],
+  xlsxwriter: ['Workbook'],
+  pdfplumber: ['open','PDF'],
+  reportlab: ['lib','platypus','graphics','pdfgen','pdfbase','rl_config'],
+  docx: ['Document','shared','oxml','enum','table','text'],
+  bs4: ['BeautifulSoup','Tag','NavigableString','Comment','SoupStrainer'],
+  BeautifulSoup: ['find','find_all','select','select_one','get_text','prettify',
+    'children','descendants','parent','parents','next_sibling','previous_sibling',
+    'attrs','string','strings','stripped_strings','name','decompose','extract',
+    'replace_with','wrap','unwrap','encode','decode'],
+  yaml: ['safe_load','safe_dump','load','dump','FullLoader','SafeLoader','SafeDumper',
+    'YAMLError','add_constructor','add_representer'],
+  tabulate: ['tabulate','SEPARATING_LINE','TableFormat'],
+  chardet: ['detect','UniversalDetector'],
+  // common object methods
+  str: ['format','join','split','rsplit','strip','lstrip','rstrip','replace','find',
+    'rfind','index','rindex','count','startswith','endswith','upper','lower','title',
+    'capitalize','swapcase','center','ljust','rjust','zfill','encode','decode',
+    'isalpha','isdigit','isalnum','isspace','isupper','islower','maketrans','translate'],
+  list: ['append','extend','insert','remove','pop','clear','index','count','sort',
+    'reverse','copy'],
+  dict: ['keys','values','items','get','pop','setdefault','update','clear','copy',
+    'fromkeys'],
+  set: ['add','remove','discard','pop','clear','copy','union','intersection','difference',
+    'symmetric_difference','issubset','issuperset','isdisjoint','update',
+    'intersection_update','difference_update'],
+};
+// Set up aliases
+DOT.numpy = DOT.np; DOT.pandas = DOT.pd; DOT.seaborn = DOT.sns;
+
+// Resolve imports & aliases: scan code for "import X as Y" / "X = ..."
+function resolveAliases(editor) {
+  const aliases = {};
+  editor.eachLine(line => {
+    let m;
+    // import X as Y
+    if ((m = line.text.match(/import\s+([\w.]+)\s+as\s+(\w+)/))) aliases[m[2]] = m[1];
+    // from X import Y  (Y could be a module with dot completions)
+    if ((m = line.text.match(/from\s+([\w.]+)\s+import\s+(.+)/))) {
+      for (const part of m[2].split(',')) {
+        const trimmed = part.trim();
+        const asMatch = trimmed.match(/(\w+)\s+as\s+(\w+)/);
+        if (asMatch) aliases[asMatch[2]] = m[1] + '.' + asMatch[1];
+        // also register the imported name itself with parent context
+        else if (trimmed.match(/^\w+$/)) {
+          const fullPath = m[1] + '.' + trimmed;
+          // If we have completions for the imported name directly, keep it
+          // Also map e.g. "from matplotlib import pyplot" -> pyplot = matplotlib.pyplot
+          if (!DOT[trimmed] && DOT[m[1]]) aliases[trimmed] = fullPath;
+        }
+      }
+    }
+  });
+  return aliases;
+}
+
+CodeMirror.registerHelper('hint', 'python', function(editor) {
+  const cur = editor.getCursor();
+  const lineText = editor.getLine(cur.line);
+  const upToCursor = lineText.slice(0, cur.ch);
+
+  // Check for dot-completion: "word." or "word.partial"
+  const dotMatch = upToCursor.match(/([\w.]+)\.(\w*)$/);
+  if (dotMatch) {
+    const obj = dotMatch[1];
+    const partial = dotMatch[2];
+    const aliases = resolveAliases(editor);
+
+    // Resolve the object: check aliases, then direct lookup
+    let resolved = aliases[obj] || obj;
+    // For chained like os.path, try the full chain first
+    let completions = DOT[resolved];
+    // Try last segment (e.g. "os.path" -> look up "path" too? No, keep os.path entries)
+    if (!completions) {
+      // Try stripping to last segment for common patterns
+      const lastDot = resolved.lastIndexOf('.');
+      if (lastDot >= 0) completions = DOT[resolved.slice(lastDot + 1)];
+    }
+    if (!completions) return;
+
+    const matches = completions.filter(c => c.startsWith(partial) && c !== partial).slice(0, 30);
+    if (!matches.length) return;
+    return {
+      list: matches,
+      from: CodeMirror.Pos(cur.line, cur.ch - partial.length),
+      to: CodeMirror.Pos(cur.line, cur.ch),
+    };
+  }
+
+  // Regular word completion
+  const token = editor.getTokenAt(cur);
+  const word = token.string.replace(/[^\w]/g, '');
+  if (word.length < 1) return;
+
+  // Collect words from document (variable names, function names, etc.)
+  const docWords = new Set();
+  editor.eachLine(line => {
+    for (const m of line.text.matchAll(/[a-zA-Z_]\w*/g)) docWords.add(m[0]);
+  });
+  const all = [...new Set([...PYTHON_WORDS, ...docWords])];
+  const matches = all.filter(w => w.startsWith(word) && w !== word).sort().slice(0, 25);
+  if (!matches.length) return;
+
+  return {
+    list: matches,
+    from: CodeMirror.Pos(cur.line, token.start + (token.string.length - word.length)),
+    to: CodeMirror.Pos(cur.line, token.end),
+  };
+});
+
+const codeEditor = CodeMirror.fromTextArea(document.getElementById('code'), {
+  mode: 'python', theme: 'dracula', lineNumbers: true, indentUnit: 4, tabSize: 4,
+  indentWithTabs: false, matchBrackets: true, extraKeys: {
+    'Ctrl-Space': 'autocomplete',
+    'Ctrl-Enter': () => runCode(),
+    Tab: cm => cm.execCommand(cm.somethingSelected() ? 'indentMore' : 'insertSoftTab'),
+  },
+  hintOptions: { completeSingle: false },
+});
+codeEditor.on('inputRead', (cm, change) => {
+  if (!change.text[0] || cm.state.completionActive) return;
+  // Trigger on dot (for os.path etc.) or after typing a word char
+  if (change.text[0] === '.' || /\w/.test(change.text[0]))
+    cm.showHint({ completeSingle: false });
+});
+
+const paramsEditor = CodeMirror.fromTextArea(document.getElementById('params'), {
+  mode: { name: 'javascript', json: true }, theme: 'dracula', lineNumbers: false,
+  matchBrackets: true,
+});
+
+// --- File attachments ---
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+
+function addFiles(fileList) {
+  for (const f of fileList) {
+    const reader = new FileReader();
+    reader.onload = () => { attachedFiles[f.name] = reader.result; renderFileList(); };
+    reader.readAsArrayBuffer(f);
+  }
+}
+
+function removeFile(name) { delete attachedFiles[name]; renderFileList(); }
+
+function renderFileList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = Object.keys(attachedFiles).map(name =>
+    `<span class="file-chip">${esc(name)}<button onclick="removeFile('${esc(name)}')">&times;</button></span>`
+  ).join('');
+}
+
+// --- Run & poll ---
+async function runCode() {
+  const btn = document.getElementById('run-btn');
+  if (polling) return;
+
+  const code = codeEditor.getValue();
+  const paramsText = paramsEditor.getValue().trim();
+  let params = null;
+  if (paramsText) {
+    try { params = JSON.parse(paramsText); }
+    catch (e) { setStatus('error', `Invalid JSON: ${e.message}`); return; }
+  }
+
+  const files = {};
+  for (const [name, buf] of Object.entries(attachedFiles))
+    files[name] = bufToBase64(buf);
+
+  btn.disabled = true; btn.textContent = 'Running...'; btn.classList.add('running');
+  setStatus('running', 'Submitting...');
+  clearOutput();
+
+  try {
+    const resp = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code, params, files,
+        max_memory_mb: +document.getElementById('memory').value,
+        max_runtime_seconds: +document.getElementById('timeout').value,
+      }),
+    });
+    const { session_id } = await resp.json();
+    currentSid = session_id;
+    polling = true;
+    pollStatus(session_id);
+  } catch (e) {
+    setStatus('error', `Network error: ${e.message}`);
+    btn.disabled = false; btn.textContent = 'Run'; btn.classList.remove('running');
+  }
+}
+
+async function pollStatus(sid) {
+  if (!polling || sid !== currentSid) return;
+  try {
+    const resp = await fetch(`/api/status/${sid}`);
+    const data = await resp.json();
+    updateLogs(data.log_lines);
+    const terminal = ['completed', 'error', 'killed', 'quota_exceeded'];
+    if (terminal.includes(data.status)) {
+      polling = false;
+      const full = await fetch(`/api/result/${sid}`).then(r => r.json());
+      showResult(full);
+    } else {
+      setStatus('running', data.status === 'queued' ? 'Queued...' : 'Running...');
+      setTimeout(() => pollStatus(sid), 400);
+    }
+  } catch (e) {
+    polling = false;
+    setStatus('error', `Poll error: ${e.message}`);
+  } finally {
+    if (!polling) {
+      const btn = document.getElementById('run-btn');
+      btn.disabled = false; btn.textContent = 'Run'; btn.classList.remove('running');
+    }
+  }
+}
+
+function showResult(r) {
+  setStatus(r.status, `${r.status}${r.exit_code !== null ? ` (exit ${r.exit_code})` : ''}`);
+  updateLogs(r.log_lines.length ? r.log_lines : r.logs ? [r.logs] : []);
+
+  // Error
+  const errBox = document.getElementById('error-box');
+  if (r.error) {
+    errBox.className = 'error-text';
+    errBox.textContent = r.error;
+    errBox.classList.remove('hidden');
+  }
+
+  // Result JSON (output.json)
+  const resultBox = document.getElementById('result-box');
+  if (r.output_files['output.json']) {
+    try {
+      const text = atob(r.output_files['output.json']);
+      const obj = JSON.parse(text);
+      resultBox.className = 'result-json';
+      resultBox.textContent = JSON.stringify(obj, null, 2);
+      resultBox.classList.remove('hidden');
+      delete r.output_files['output.json'];
+    } catch (e) { /* not valid JSON, show as file */ }
+  }
+
+  // Output files
+  const filesEl = document.getElementById('output-files');
+  const fileNames = Object.keys(r.output_files);
+  if (fileNames.length) {
+    filesEl.innerHTML = '<h3 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Output Files</h3>';
+    for (const name of fileNames) {
+      const b64 = r.output_files[name];
+      const ext = name.split('.').pop().toLowerCase();
+      const div = document.createElement('div');
+
+      if (['png','jpg','jpeg','gif','svg','webp'].includes(ext)) {
+        const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+        div.innerHTML = `<div class="output-file"><span class="fname">${esc(name)}</span>
+          <button onclick="downloadB64('${esc(name)}','${b64}')">Download</button></div>
+          <img class="output-img" src="data:${mime};base64,${b64}">`;
+      } else if (['txt','csv','json','py','html','xml','yaml','yml','md','log'].includes(ext)) {
+        const text = atob(b64);
+        div.innerHTML = `<div class="output-file"><span class="fname">${esc(name)}</span>
+          <button onclick="downloadB64('${esc(name)}','${b64}')">Download</button></div>
+          <div class="output-text">${esc(text)}</div>`;
+      } else {
+        div.innerHTML = `<div class="output-file"><span class="fname">${esc(name)}</span>
+          <button onclick="downloadB64('${esc(name)}','${b64}')">Download</button></div>`;
+      }
+      filesEl.appendChild(div);
+    }
+    filesEl.classList.remove('hidden');
+  }
+}
+
+// --- UI helpers ---
+function setStatus(type, text) {
+  const dot = document.querySelector('#status-bar .dot');
+  dot.className = `dot ${type}`;
+  document.getElementById('status-text').textContent = text;
+}
+
+function updateLogs(lines) {
+  const el = document.getElementById('logs-box');
+  el.textContent = lines.join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearOutput() {
+  document.getElementById('logs-box').textContent = '';
+  document.getElementById('result-box').className = 'result-json hidden';
+  document.getElementById('error-box').className = 'hidden';
+  const filesEl = document.getElementById('output-files');
+  filesEl.innerHTML = ''; filesEl.classList.add('hidden');
+}
+
+function downloadB64(name, b64) {
+  const a = document.createElement('a');
+  a.href = `data:application/octet-stream;base64,${b64}`;
+  a.download = name; a.click();
+}
+
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function esc(s) {
+  const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+// --- Auto-save on editor changes ---
+codeEditor.on('change', scheduleSave);
+paramsEditor.on('change', scheduleSave);
+
+// --- Fetch and display env info in footer ---
+async function loadEnvFooter() {
+  try {
+    const r = await fetch('/api/env');
+    const env = await r.json();
+    const parts = [];
+    if (env.redis) {
+      // Shorten: take subdomain + parent domain, drop port
+      const host = env.redis.replace(/:\d+.*$/, '');
+      const segs = host.split('.');
+      parts.push(segs.length > 2 ? segs.slice(0, 2).join('.') : host);
+    }
+    if (env.workers !== undefined) parts.push(`${env.workers} worker${env.workers !== 1 ? 's' : ''}`);
+    document.getElementById('status-footer').textContent = parts.join('  \u00b7  ');
+  } catch (e) { /* silent */ }
+}
+loadEnvFooter();
+
+// --- Init: load from IndexedDB or create default tab ---
+(async () => {
+  await openDB();
+  const savedTabs = await dbGet('tabs');
+  const savedActive = await dbGet('activeTabId');
+  if (savedTabs && savedTabs.length > 0) {
+    tabs = savedTabs;
+    activeTabId = savedActive && tabs.find(t => t.id === savedActive) ? savedActive : tabs[0].id;
+    const tab = tabs.find(t => t.id === activeTabId);
+    codeEditor.setValue(tab.code);
+    paramsEditor.setValue(tab.params);
+  } else {
+    const id = makeTabId();
+    tabs = [{ id, name: 'main.py', code: DEFAULT_CODE, params: '{"name": "world"}' }];
+    activeTabId = id;
+  }
+  renderTabs();
+  codeEditor.refresh();
+})();
+</script>
+</body>
+</html>
