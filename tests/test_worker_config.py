@@ -77,6 +77,66 @@ description = "From project section"
         config = load_worker_config(str(tmp_path))
         assert config["description"] == "From project section"
 
+    def test_operations(self, tmp_path):
+        """Loads operations list from pyproject.toml."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""\
+[project]
+name = "image-service"
+dependencies = ["pillow"]
+
+[tool.flute.worker]
+type = "service-runner"
+handler = "svc:ImageService"
+description = "Image processing"
+operations = ["resize", "crop", "watermark"]
+""")
+        config = load_worker_config(str(tmp_path))
+        assert config["operations"] == ["resize", "crop", "watermark"]
+        assert config["type"] == "service-runner"
+        assert config["handler"] == "svc:ImageService"
+
+    def test_operations_default_empty(self, tmp_path):
+        """Operations defaults to empty list when not specified."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""\
+[project]
+name = "basic-worker"
+
+[tool.flute.worker]
+type = "python-runner"
+""")
+        config = load_worker_config(str(tmp_path))
+        assert config["operations"] == []
+
+    def test_accept_files(self, tmp_path):
+        """Loads accept_files list from pyproject.toml."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""\
+[project]
+name = "image-service"
+
+[tool.flute.worker]
+type = "service-runner"
+handler = "svc:ImageService"
+accept_files = ["image/*"]
+""")
+        config = load_worker_config(str(tmp_path))
+        assert config["accept_files"] == ["image/*"]
+
+    def test_accept_files_default_empty(self, tmp_path):
+        """accept_files defaults to empty list when not specified."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""\
+[project]
+name = "basic-worker"
+
+[tool.flute.worker]
+type = "python-runner"
+""")
+        config = load_worker_config(str(tmp_path))
+        assert config["accept_files"] == []
+
     def test_missing_pyproject_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_worker_config(str(tmp_path))

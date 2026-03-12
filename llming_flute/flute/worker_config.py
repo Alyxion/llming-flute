@@ -24,6 +24,8 @@ def load_worker_config(worker_dir: str) -> dict:
         "handler": flute.get("handler"),
         "description": flute.get("description", project.get("description", "")),
         "dependencies": project.get("dependencies", []),
+        "operations": flute.get("operations", []),
+        "accept_files": flute.get("accept_files", []),
     }
 
 

@@ -1,11 +1,13 @@
 [project]
 name = "image-processor"
-description = "Image processing task runner"
+description = "Image processing service: grayscale, resize (multi-step pipelines)"
 dependencies = [
     "pillow>=10.0",
 ]
 
 [tool.flute.worker]
-type = "task-runner"
-handler = "handler:ImageProcessHandler"
-description = "Process images: grayscale, resize, thumbnail"
+type = "service-runner"
+handler = "service:ImageService"
+description = "Long-lived image processing service with multi-step pipeline support"
+operations = ["grayscale", "resize"]
+accept_files = ["image/*"]

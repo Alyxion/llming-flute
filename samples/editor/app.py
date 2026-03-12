@@ -3,6 +3,13 @@
 Usage:
     pip install aiohttp
     python samples/editor/app.py [--port 8200] [--redis redis://localhost:6399/0]
+
+Environments are configured in ``environments.json`` (gitignored) next to this file::
+
+    {
+      "local": {"name": "Local Docker", "redis": "redis://localhost:6399/0"},
+      "azure": {"name": "Azure AKS",    "redis": "rediss://:KEY@host:port,"}
+    }
 """
 
 import argparse
@@ -16,13 +23,54 @@ from aiohttp import web
 from flute import SessionClient
 
 STATIC_DIR = Path(__file__).parent
+ENVS_FILE = STATIC_DIR / "environments.json"
 client: SessionClient
+current_env_key: str | None = None
+
+
+def load_environments() -> dict:
+    """Load environment definitions from environments.json."""
+    if ENVS_FILE.exists():
+        with open(ENVS_FILE) as f:
+            return json.load(f)
+    # Fallback: single local environment
+    return {"local": {"name": "Local", "redis": "redis://localhost:6399/0"}}
+
+
+async def connect_env(key: str) -> None:
+    """Connect (or reconnect) the global client to the given environment."""
+    global client, current_env_key
+    envs = load_environments()
+    if key not in envs:
+        key = next(iter(envs))  # fallback to first
+    redis_url = envs[key]["redis"]
+    os.environ["REDIS_URL"] = redis_url
+    client = SessionClient(redis_url)
+    await client._ensure_connected()
+    current_env_key = key
 
 
 async def init_client(app):
-    global client
-    client = SessionClient(os.environ.get("REDIS_URL", "redis://localhost:6399/0"))
-    await client._ensure_connected()
+    # If --redis was passed, use that directly (legacy mode)
+    redis_override = os.environ.get("REDIS_URL")
+    if redis_override:
+        # Try to find a matching env key
+        envs = load_environments()
+        matched = None
+        for key, cfg in envs.items():
+            if cfg.get("redis") == redis_override:
+                matched = key
+                break
+        if matched:
+            await connect_env(matched)
+        else:
+            global client, current_env_key
+            client = SessionClient(redis_override)
+            await client._ensure_connected()
+            current_env_key = "__cli__"
+    else:
+        envs = load_environments()
+        await connect_env(next(iter(envs)))
 
 
 routes = web.RouteTableDef()
@@ -36,25 +84,46 @@ async def index(request):
 @routes.post("/api/run")
 async def run(request):
     data = await request.json()
-    code = data.get("code", "")
     params = data.get("params")
     files = data.get("files", {})
     max_memory = data.get("max_memory_mb", 512)
     max_runtime = data.get("max_runtime_seconds", 30)
+    worker_type = data.get("worker_type", "python")
 
-    input_files = {}
-    if params is not None:
-        input_files["input.json"] = json.dumps(params, indent=2).encode()
-    for name, b64data in files.items():
-        input_files[name] = base64.b64decode(b64data)
+    # Decode attached files
+    files_bytes = {name: base64.b64decode(b64) for name, b64 in files.items()}
 
-    sid = await client.submit(
-        code,
-        input_files=input_files or None,
-        max_memory_mb=max_memory,
-        max_runtime_seconds=max_runtime,
-    )
+    if data.get("code") is not None:
+        # Python runner mode
+        input_files = {}
+        if params is not None:
+            input_files["input.json"] = json.dumps(params, indent=2).encode()
+        input_files.update(files_bytes)
+        sid = await client.submit(
+            data["code"],
+            input_files=input_files or None,
+            worker_type=worker_type,
+            max_memory_mb=max_memory,
+            max_runtime_seconds=max_runtime,
+        )
+    else:
+        # Service mode (no code, just files + params + steps)
+        sid = await client.submit_service(
+            worker_type=worker_type,
+            input_files=files_bytes or None,
+            params=params or {},
+            steps=data.get("steps", []),
+            max_memory_mb=max_memory,
+            max_runtime_seconds=max_runtime,
+        )
     return web.json_response({"session_id": sid})
+
+
+@routes.post("/api/cancel/{sid}")
+async def cancel(request):
+    sid = request.match_info["sid"]
+    await client.cancel(sid)
+    return web.json_response({"ok": True})
 
 
 @routes.get("/api/status/{sid}")
@@ -63,7 +132,8 @@ async def status(request):
     await client._ensure_connected()
     st = await client.r.get(f"session:{sid}:status") or "unknown"
     lines = await client.log_lines(sid)
-    return web.json_response({"status": st, "log_lines": lines})
+    progress = await client.progress(sid)
+    return web.json_response({"status": st, "log_lines": lines, "progress": progress})
 
 
 @routes.get("/api/result/{sid}")
@@ -106,7 +176,32 @@ async def env_info(request):
         info["workers"] = len(await client.workers())
     except Exception:
         info["workers"] = 0
+    info["current_env"] = current_env_key
     return web.json_response(info)
+
+
+@routes.get("/api/environments")
+async def environments(request):
+    envs = load_environments()
+    result = []
+    for key, cfg in envs.items():
+        redis_url = cfg.get("redis", "")
+        # Strip credentials for display
+        safe = redis_url.split("@")[-1] if "@" in redis_url else redis_url
+        safe = safe.rstrip(",").split(":")[0] if safe else ""
+        result.append({"key": key, "name": cfg.get("name", key), "host": safe})
+    return web.json_response({"environments": result, "current": current_env_key})
+
+
+@routes.post("/api/environment")
+async def switch_environment(request):
+    data = await request.json()
+    key = data.get("key")
+    envs = load_environments()
+    if key not in envs:
+        return web.json_response({"error": "Unknown environment"}, status=400)
+    await connect_env(key)
+    return web.json_response({"ok": True, "key": key})
 
 
 def main():
@@ -118,7 +213,7 @@ def main():
     if args.redis:
         os.environ["REDIS_URL"] = args.redis
 
-    app = web.Application()
+    app = web.Application(client_max_size=50 * 1024 * 1024)  # 50 MB
     app.on_startup.append(init_client)
     app.add_routes(routes)
 

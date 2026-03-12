@@ -87,9 +87,92 @@ class SessionClient:
         await self.r.rpush(queue_key, json.dumps(payload))
         return sid
 
+    async def submit_service(
+        self,
+        *,
+        worker_type: str,
+        input_files: dict[str, bytes] | None = None,
+        params: dict | None = None,
+        steps: list[str] | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        max_runtime_seconds: int = 30,
+        max_memory_mb: int = 512,
+        max_disk_mb: int = 50,
+    ) -> str:
+        """Submit a job to a service-runner worker. Returns session_id."""
+        await self._ensure_connected()
+        sid = session_id or uuid.uuid4().hex[:12]
+        payload = {
+            "session_id": sid,
+            "worker_type": worker_type,
+            "params": params or {},
+            "steps": steps or [],
+            "max_runtime_seconds": max_runtime_seconds,
+            "max_memory_mb": max_memory_mb,
+            "max_disk_mb": max_disk_mb,
+        }
+        if user_id:
+            payload["user_id"] = user_id
+        if input_files:
+            payload["input_files"] = {
+                name: base64.b64encode(data).decode() for name, data in input_files.items()
+            }
+        await self._clear_session_keys(sid)
+        queue_key = f"session:queue:{worker_type}"
+        await self.r.rpush(queue_key, json.dumps(payload))
+        return sid
+
+    async def pipeline(
+        self,
+        steps: list[dict],
+        *,
+        input_files: dict[str, bytes],
+        user_id: str | None = None,
+        max_runtime_seconds: int = 60,
+    ) -> dict:
+        """Chain multiple service steps.
+
+        Each entry in *steps* is ``{"worker_type": "...", "params": {}, "steps": [...]}``.
+        Output files from step *N* become input files for step *N+1*.
+        Returns the final result dict.
+        """
+        current_files = input_files
+        result: dict = {}
+        for step_spec in steps:
+            wt = step_spec["worker_type"]
+            sid = await self.submit_service(
+                worker_type=wt,
+                input_files=current_files,
+                params=step_spec.get("params", {}),
+                steps=step_spec.get("steps", []),
+                user_id=user_id,
+                max_runtime_seconds=max_runtime_seconds,
+            )
+            result = await self.wait(sid, timeout=max_runtime_seconds + 30)
+            if result["status"] != "completed":
+                return result
+            current_files = result["output_files"]
+        return result
+
+    async def progress(self, session_id: str) -> dict | None:
+        """Fetch the latest progress for a session (or None)."""
+        await self._ensure_connected()
+        raw = await self.r.get(f"session:{session_id}:progress")
+        if raw:
+            return json.loads(raw)
+        return None
+
+    async def cancel(self, session_id: str) -> bool:
+        """Request cancellation of a running session. Returns True if the signal was set."""
+        await self._ensure_connected()
+        key = f"session:{session_id}:cancel"
+        await self.r.set(key, "1", ex=120)
+        return True
+
     async def _clear_session_keys(self, sid: str):
         """Remove stale keys from a previous session with the same id."""
-        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response", "cancel"):
             await self.r.delete(f"session:{sid}:{suffix}")
         await self.r.delete(f"session:{sid}:output_files")
         await self.r.delete(f"session:{sid}:logs:lines")
@@ -100,7 +183,7 @@ class SessionClient:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             status = await self.r.get(f"session:{session_id}:status")
-            if status in ("completed", "error", "killed", "quota_exceeded"):
+            if status in ("completed", "error", "killed", "cancelled", "quota_exceeded"):
                 await asyncio.sleep(0.1)
                 return await self.result(session_id)
             await asyncio.sleep(poll)
@@ -118,7 +201,7 @@ class SessionClient:
                 msg = await pubsub.get_message(timeout=1)
                 if msg is None:
                     status = await self.r.get(f"session:{session_id}:status")
-                    if status in ("completed", "error", "killed", "quota_exceeded"):
+                    if status in ("completed", "error", "killed", "cancelled", "quota_exceeded"):
                         break
                     continue
                 if msg["type"] != "message":

@@ -27,7 +27,7 @@ header h1 { font-size: 16px; font-weight: 600; color: var(--blue); white-space: 
   padding: 6px 18px; font-weight: 600; font-size: 13px; cursor: pointer; transition: all .15s; }
 #run-btn:hover { filter: brightness(1.1); }
 #run-btn:disabled { background: var(--muted); cursor: wait; }
-#run-btn.running { background: var(--yellow); }
+#run-btn.running { background: var(--red); cursor: pointer; }
 main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; }
 #editor-panel { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 #editor-panel .CodeMirror { flex: 1; font-size: 13px; line-height: 1.5; }
@@ -48,7 +48,7 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.running { background: var(--yellow); animation: pulse 1s infinite; }
 .dot.completed { background: var(--green); }
-.dot.error, .dot.killed { background: var(--red); }
+.dot.error, .dot.killed, .dot.cancelled { background: var(--red); }
 .dot.idle { background: var(--muted); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 #logs-box { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
@@ -92,6 +92,24 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
 #status-footer { display: flex; align-items: center; gap: 12px; padding: 3px 14px;
   background: var(--bg2); border-top: 1px solid var(--border); flex-shrink: 0;
   font-size: 11px; color: var(--muted); font-family: 'SF Mono', Consolas, monospace; }
+
+/* --- Service mode & progress --- */
+#service-selector { margin-right: 4px; }
+#steps-section { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.step-check { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 4px; }
+.step-check input { accent-color: var(--blue); }
+#progress-bar-wrap { display: none; margin-bottom: 8px; }
+#progress-bar-wrap.active { display: block; }
+#progress-bar { width: 100%; height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+#progress-bar-fill { height: 100%; background: var(--blue); border-radius: 3px; transition: width .3s; width: 0%; }
+#progress-label { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex;
+  justify-content: space-between; }
+#service-drop-hint { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px;
+  flex-direction: column; align-items: center; justify-content: center; flex: 1;
+  cursor: pointer; border: 2px dashed transparent; transition: border-color .15s; margin: 12px; border-radius: 8px;
+  display: none; }
+#service-drop-hint:hover { border-color: var(--border); }
+#service-drop-hint .big { font-size: 32px; margin-bottom: 8px; opacity: .5; }
 </style>
 </head>
 <body>
@@ -99,6 +117,13 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
 <header>
   <h1>Flute</h1>
   <div class="controls">
+    <label><select id="env-selector" onchange="switchEnv()" title="Switch environment"
+      style="background:var(--bg);border-color:var(--blue);color:var(--blue);font-weight:600;padding:3px 8px;">
+    </select></label>
+    <span style="color:var(--border)">|</span>
+    <label>Endpoint <select id="service-selector" onchange="switchEndpoint()">
+      <option value="python">Python</option>
+    </select></label>
     <label>Memory <select id="memory">
       <option value="128">128 MB</option>
       <option value="256">256 MB</option>
@@ -112,7 +137,7 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
       <option value="120">120s</option>
       <option value="300">5m</option>
     </select></label>
-    <button id="run-btn" onclick="runCode()">Run</button>
+    <button id="run-btn" onclick="runOrCancel()">Run</button>
   </div>
 </header>
 
@@ -135,13 +160,17 @@ result = {"message": "Hello from Flute!", "echo": params}
 json.dump(result, open('output.json', 'w'))
 print("Done!")
 </textarea>
+    <div id="service-drop-hint">
+      <div class="big" id="drop-hint-icon">Drop file here</div>
+      <div id="drop-hint-text">or use the file picker on the right</div>
+    </div>
   </div>
   <div id="side-panel">
     <div class="section">
       <h3>Parameters <small>input.json</small></h3>
       <div class="params-editor"><textarea id="params">{"name": "world"}</textarea></div>
     </div>
-    <div class="section">
+    <div class="section hidden" id="file-section">
       <h3>Input Files</h3>
       <div id="drop-zone" onclick="document.getElementById('file-input').click()">
         Drop files here or click to browse
@@ -149,9 +178,17 @@ print("Done!")
       <input type="file" id="file-input" multiple class="hidden">
       <div id="file-list"></div>
     </div>
+    <div class="section hidden" id="steps-section">
+      <h3>Pipeline Steps</h3>
+      <div id="steps-list"></div>
+    </div>
     <div class="section" id="output-section">
       <h3>Output</h3>
       <div id="status-bar"><span class="dot idle"></span> <span id="status-text">Ready</span></div>
+      <div id="progress-bar-wrap">
+        <div id="progress-bar"><div id="progress-bar-fill"></div></div>
+        <div id="progress-label"><span id="progress-step"></span><span id="progress-pct"></span></div>
+      </div>
       <div id="result-box" class="hidden"></div>
       <div id="error-box" class="hidden"></div>
       <div id="logs-box"></div>
@@ -171,6 +208,9 @@ print("Done!")
 const attachedFiles = {};
 let currentSid = null;
 let polling = false;
+let serviceMode = false;       // true when a service endpoint is selected
+let availableServices = [];    // from /api/services
+let selectedService = null;    // current service info object
 
 // --- IndexedDB persistence ---
 const DB_NAME = 'flute-editor';
@@ -549,7 +589,7 @@ const codeEditor = CodeMirror.fromTextArea(document.getElementById('code'), {
   mode: 'python', theme: 'dracula', lineNumbers: true, indentUnit: 4, tabSize: 4,
   indentWithTabs: false, matchBrackets: true, extraKeys: {
     'Ctrl-Space': 'autocomplete',
-    'Ctrl-Enter': () => runCode(),
+    'Ctrl-Enter': () => runOrCancel(),
     Tab: cm => cm.execCommand(cm.somethingSelected() ? 'indentMore' : 'insertSoftTab'),
   },
   hintOptions: { completeSingle: false },
@@ -568,39 +608,168 @@ const paramsEditor = CodeMirror.fromTextArea(document.getElementById('params'), 
 
 // --- File attachments ---
 const dropZone = document.getElementById('drop-zone');
+const serviceDropHint = document.getElementById('service-drop-hint');
 const fileInput = document.getElementById('file-input');
 
+// Sidebar drop zone
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('dragover');
   addFiles(e.dataTransfer.files);
 });
+// Center drop area (service mode)
+serviceDropHint.addEventListener('dragover', e => { e.preventDefault(); serviceDropHint.style.borderColor = 'var(--blue)'; });
+serviceDropHint.addEventListener('dragleave', () => { serviceDropHint.style.borderColor = ''; });
+serviceDropHint.addEventListener('drop', e => {
+  e.preventDefault(); serviceDropHint.style.borderColor = '';
+  addFiles(e.dataTransfer.files);
+});
+serviceDropHint.addEventListener('click', () => { if (serviceMode) fileInput.click(); });
 fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
 
 function addFiles(fileList) {
   for (const f of fileList) {
     const reader = new FileReader();
-    reader.onload = () => { attachedFiles[f.name] = reader.result; renderFileList(); };
+    reader.onload = () => {
+      attachedFiles[f.name] = reader.result;
+      renderFileList();
+      // Show preview in center area for images
+      if (serviceMode && f.type.startsWith('image/')) showCenterPreview(f.name, reader.result);
+    };
     reader.readAsArrayBuffer(f);
   }
 }
 
-function removeFile(name) { delete attachedFiles[name]; renderFileList(); }
+function showCenterPreview(name, buf) {
+  const hint = document.getElementById('service-drop-hint');
+  const blob = new Blob([buf]);
+  const url = URL.createObjectURL(blob);
+  hint.innerHTML = `<img src="${url}" style="max-width:100%;max-height:calc(100vh - 200px);object-fit:contain;border-radius:6px;">
+    <div style="margin-top:8px;font-size:12px;color:var(--muted)">${esc(name)}</div>`;
+}
+
+function removeFile(name) {
+  delete attachedFiles[name];
+  renderFileList();
+  // Restore drop hint if no files left
+  if (serviceMode && Object.keys(attachedFiles).length === 0) restoreCenterHint();
+}
+
+function restoreCenterHint() {
+  const hint = document.getElementById('service-drop-hint');
+  const accept = (selectedService && selectedService.accept_files) || [];
+  const label = accept.length ? accept.map(a => a.replace('/*', '')).join(' / ') : 'file';
+  hint.innerHTML = `<div class="big" id="drop-hint-icon">Drop ${esc(label)} here</div>
+    <div id="drop-hint-text">or use the file picker on the right</div>`;
+}
 
 function renderFileList() {
   const el = document.getElementById('file-list');
-  el.innerHTML = Object.keys(attachedFiles).map(name =>
-    `<span class="file-chip">${esc(name)}<button onclick="removeFile('${esc(name)}')">&times;</button></span>`
-  ).join('');
+  el.innerHTML = Object.keys(attachedFiles).map(name => {
+    const isImg = /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name);
+    let thumb = '';
+    if (isImg) {
+      const blob = new Blob([attachedFiles[name]]);
+      const url = URL.createObjectURL(blob);
+      thumb = `<img src="${url}" style="height:18px;border-radius:2px;vertical-align:middle;margin-right:4px;">`;
+    }
+    return `<span class="file-chip">${thumb}${esc(name)}<button onclick="removeFile('${esc(name)}')">&times;</button></span>`;
+  }).join('');
+}
+
+// --- Service mode switching ---
+function switchEndpoint() {
+  const sel = document.getElementById('service-selector');
+  const wt = sel.value;
+  const svc = availableServices.find(s => s.worker_type === wt && s.type === 'service-runner');
+  serviceMode = !!svc;
+  selectedService = svc || null;
+
+  // Toggle editor vs service drop hint
+  const cm = document.querySelector('#editor-panel .CodeMirror');
+  const hint = document.getElementById('service-drop-hint');
+  const tabBar = document.getElementById('tab-bar');
+  const paramsSection = document.querySelector('#side-panel .section:first-child');
+  const stepsSection = document.getElementById('steps-section');
+  const fileSection = document.getElementById('file-section');
+  const fileInput = document.getElementById('file-input');
+
+  if (serviceMode) {
+    const accept = svc.accept_files || [];
+    cm.style.display = 'none';
+    hint.style.display = 'flex';
+    tabBar.style.display = 'none';
+    // Show preview if files already attached, otherwise show drop hint
+    if (Object.keys(attachedFiles).length > 0) {
+      const firstName = Object.keys(attachedFiles)[0];
+      showCenterPreview(firstName, attachedFiles[firstName]);
+    } else {
+      restoreCenterHint();
+    }
+    // Set file input accept attribute
+    fileInput.accept = accept.join(',');
+    // Show file drop + params as task editor
+    fileSection.style.display = '';
+    paramsSection.classList.remove('hidden');
+    paramsSection.querySelector('h3 small').textContent = 'task params';
+    paramsEditor.setValue(JSON.stringify({}, null, 2));
+    // Show steps
+    stepsSection.classList.remove('hidden');
+    const list = document.getElementById('steps-list');
+    list.innerHTML = (svc.operations || []).map(op =>
+      `<label class="step-check"><input type="checkbox" value="${esc(op)}" checked> ${esc(op)}</label>`
+    ).join('');
+  } else {
+    // Python mode: code editor, params, no file drop
+    cm.style.display = '';
+    hint.style.display = 'none';
+    tabBar.style.display = '';
+    paramsSection.classList.remove('hidden');
+    paramsSection.querySelector('h3 small').textContent = 'input.json';
+    stepsSection.classList.add('hidden');
+    fileSection.style.display = 'none';
+    fileInput.accept = '';
+  }
+}
+
+function getSelectedSteps() {
+  return [...document.querySelectorAll('#steps-list input:checked')].map(cb => cb.value);
+}
+
+function updateProgress(data) {
+  const wrap = document.getElementById('progress-bar-wrap');
+  if (data && data.progress != null) {
+    wrap.classList.add('active');
+    const pct = Math.round(data.progress * 100);
+    document.getElementById('progress-bar-fill').style.width = pct + '%';
+    document.getElementById('progress-step').textContent = data.step || '';
+    const etaText = data.eta_seconds != null ? `ETA ${data.eta_seconds.toFixed(1)}s` : `${pct}%`;
+    document.getElementById('progress-pct').textContent = etaText;
+  } else {
+    wrap.classList.remove('active');
+  }
 }
 
 // --- Run & poll ---
+function runOrCancel() {
+  if (polling && currentSid) { cancelSession(); return; }
+  runCode();
+}
+
+async function cancelSession() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true; btn.textContent = 'Cancelling...';
+  try {
+    await fetch(`/api/cancel/${currentSid}`, { method: 'POST' });
+  } catch (e) { /* best-effort */ }
+  btn.disabled = false;
+}
+
 async function runCode() {
   const btn = document.getElementById('run-btn');
   if (polling) return;
 
-  const code = codeEditor.getValue();
   const paramsText = paramsEditor.getValue().trim();
   let params = null;
   if (paramsText) {
@@ -612,19 +781,37 @@ async function runCode() {
   for (const [name, buf] of Object.entries(attachedFiles))
     files[name] = bufToBase64(buf);
 
-  btn.disabled = true; btn.textContent = 'Running...'; btn.classList.add('running');
+  // Validate: service mode needs at least one file
+  if (serviceMode && Object.keys(files).length === 0) {
+    setStatus('error', 'Drop a file to process');
+    return;
+  }
+
+  btn.textContent = 'Cancel'; btn.classList.add('running');
   setStatus('running', 'Submitting...');
   clearOutput();
+  updateProgress(null);
+
+  const body = {
+    params, files,
+    max_memory_mb: +document.getElementById('memory').value,
+    max_runtime_seconds: +document.getElementById('timeout').value,
+  };
+
+  if (serviceMode) {
+    body.worker_type = selectedService.worker_type;
+    body.steps = getSelectedSteps();
+    // No code field -> triggers service mode on backend
+  } else {
+    body.code = codeEditor.getValue();
+    body.worker_type = 'python';
+  }
 
   try {
     const resp = await fetch('/api/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code, params, files,
-        max_memory_mb: +document.getElementById('memory').value,
-        max_runtime_seconds: +document.getElementById('timeout').value,
-      }),
+      body: JSON.stringify(body),
     });
     const { session_id } = await resp.json();
     currentSid = session_id;
@@ -632,7 +819,7 @@ async function runCode() {
     pollStatus(session_id);
   } catch (e) {
     setStatus('error', `Network error: ${e.message}`);
-    btn.disabled = false; btn.textContent = 'Run'; btn.classList.remove('running');
+    btn.textContent = 'Run'; btn.classList.remove('running');
   }
 }
 
@@ -642,9 +829,11 @@ async function pollStatus(sid) {
     const resp = await fetch(`/api/status/${sid}`);
     const data = await resp.json();
     updateLogs(data.log_lines);
-    const terminal = ['completed', 'error', 'killed', 'quota_exceeded'];
+    if (data.progress) updateProgress(data.progress);
+    const terminal = ['completed', 'error', 'killed', 'cancelled', 'quota_exceeded'];
     if (terminal.includes(data.status)) {
       polling = false;
+      updateProgress(null);
       const full = await fetch(`/api/result/${sid}`).then(r => r.json());
       showResult(full);
     } else {
@@ -658,6 +847,7 @@ async function pollStatus(sid) {
     if (!polling) {
       const btn = document.getElementById('run-btn');
       btn.disabled = false; btn.textContent = 'Run'; btn.classList.remove('running');
+      currentSid = null;
     }
   }
 }
@@ -759,6 +949,80 @@ function esc(s) {
 codeEditor.on('change', scheduleSave);
 paramsEditor.on('change', scheduleSave);
 
+// --- Environment switching ---
+let allEnvironments = [];
+
+async function loadEnvironments() {
+  try {
+    const r = await fetch('/api/environments');
+    const data = await r.json();
+    allEnvironments = data.environments || [];
+    const sel = document.getElementById('env-selector');
+    sel.innerHTML = '';
+    for (const env of allEnvironments) {
+      const opt = document.createElement('option');
+      opt.value = env.key;
+      opt.textContent = env.name;
+      sel.appendChild(opt);
+    }
+    // Restore last-used env from IndexedDB or use server's current
+    const lastEnv = db ? await dbGet('lastEnvKey') : null;
+    const target = lastEnv && allEnvironments.find(e => e.key === lastEnv)
+      ? lastEnv
+      : data.current;
+    if (target && target !== data.current) {
+      sel.value = target;
+      await switchEnv();
+    } else if (target) {
+      sel.value = target;
+    }
+  } catch (e) { /* silent */ }
+}
+
+async function switchEnv() {
+  const sel = document.getElementById('env-selector');
+  const key = sel.value;
+  try {
+    const r = await fetch('/api/environment', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key}),
+    });
+    if (!r.ok) { setStatus('error', 'Failed to switch environment'); return; }
+    if (db) await dbPut('lastEnvKey', key);
+    // Refresh services and footer for the new environment
+    await Promise.all([loadServices(), loadEnvFooter()]);
+  } catch (e) {
+    setStatus('error', `Env switch: ${e.message}`);
+  }
+}
+
+// --- Load available services ---
+async function loadServices() {
+  try {
+    const resp = await fetch('/api/services');
+    availableServices = await resp.json();
+    const sel = document.getElementById('service-selector');
+    // Reset to just Python, then add services
+    sel.innerHTML = '<option value="python">Python</option>';
+    for (const svc of availableServices) {
+      if (svc.type === 'service-runner') {
+        const opt = document.createElement('option');
+        opt.value = svc.worker_type;
+        opt.textContent = svc.worker_type;
+        sel.appendChild(opt);
+      }
+    }
+    // Restore endpoint selection if still valid
+    if (serviceMode && selectedService) {
+      const still = availableServices.find(s => s.worker_type === selectedService.worker_type);
+      if (still) sel.value = selectedService.worker_type;
+    }
+    // Always sync UI state after repopulating
+    switchEndpoint();
+  } catch (e) { /* silent */ }
+}
+
 // --- Fetch and display env info in footer ---
 async function loadEnvFooter() {
   try {
@@ -766,7 +1030,6 @@ async function loadEnvFooter() {
     const env = await r.json();
     const parts = [];
     if (env.redis) {
-      // Shorten: take subdomain + parent domain, drop port
       const host = env.redis.replace(/:\d+.*$/, '');
       const segs = host.split('.');
       parts.push(segs.length > 2 ? segs.slice(0, 2).join('.') : host);
@@ -775,11 +1038,16 @@ async function loadEnvFooter() {
     document.getElementById('status-footer').textContent = parts.join('  \u00b7  ');
   } catch (e) { /* silent */ }
 }
-loadEnvFooter();
 
-// --- Init: load from IndexedDB or create default tab ---
+// --- Init: load from IndexedDB, restore env, then tabs ---
 (async () => {
   await openDB();
+
+  // Load environments first (may switch Redis)
+  await loadEnvironments();
+  await loadEnvFooter();
+
+  // Load tabs
   const savedTabs = await dbGet('tabs');
   const savedActive = await dbGet('activeTabId');
   if (savedTabs && savedTabs.length > 0) {

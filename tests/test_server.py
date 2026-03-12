@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import FakeRedis
-from flute.handlers import PythonHandler, TaskRunnerHandler
+from flute.handlers import PythonHandler, ServiceHandler, TaskRunnerHandler
 from flute.server import (
     _charge_quota,
     _heartbeat,
@@ -90,6 +90,28 @@ class EchoHandler:
     def test_no_dir_has_no_config(self):
         handler = create_handler(None)
         assert handler.worker_config is None
+
+    def test_service_runner_from_dir(self, tmp_path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("""\
+[project]
+name = "image-service"
+dependencies = ["pillow"]
+
+[tool.flute.worker]
+type = "service-runner"
+handler = "svc_handler:ImageService"
+description = "Image processing service"
+operations = ["resize", "crop", "watermark"]
+""")
+        handler = create_handler(str(tmp_path))
+        assert isinstance(handler, ServiceHandler)
+        assert handler.worker_type == "image-service"
+        assert handler.worker_config is not None
+        assert handler.worker_config["type"] == "service-runner"
+        assert handler.worker_config["operations"] == ["resize", "crop", "watermark"]
+        assert handler.worker_config["description"] == "Image processing service"
+        assert handler.worker_config["dependencies"] == ["pillow"]
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +233,52 @@ class TestRegisterService:
         await _register_service(r, handler)
         info = json.loads((await r.hgetall("services"))["no-desc"])
         assert info["description"] == ""
+
+    @pytest.mark.asyncio
+    async def test_service_runner(self):
+        """ServiceHandler registers with type='service-runner' and operations list."""
+        r = FakeRedis()
+        handler = ServiceHandler(
+            worker_type="image-service",
+            worker_dir="/fake/dir",
+            module_name="svc",
+            class_name="ImageSvc",
+        )
+        handler.worker_config = {
+            "type": "service-runner",
+            "description": "Image processing",
+            "dependencies": ["pillow", "opencv-python"],
+            "operations": ["resize", "crop", "watermark"],
+        }
+        await _register_service(r, handler)
+        raw = await r.hgetall("services")
+        assert "image-service" in raw
+        info = json.loads(raw["image-service"])
+        assert info["type"] == "service-runner"
+        assert info["worker_type"] == "image-service"
+        assert info["description"] == "Image processing"
+        assert info["dependencies"] == ["pillow", "opencv-python"]
+        assert info["operations"] == ["resize", "crop", "watermark"]
+
+    @pytest.mark.asyncio
+    async def test_service_runner_accept_files(self):
+        """ServiceHandler registers accept_files from worker config."""
+        r = FakeRedis()
+        handler = ServiceHandler(
+            worker_type="image-service",
+            worker_dir="/fake/dir",
+            module_name="svc",
+            class_name="ImageSvc",
+        )
+        handler.worker_config = {
+            "type": "service-runner",
+            "description": "Image processing",
+            "operations": ["resize"],
+            "accept_files": ["image/*"],
+        }
+        await _register_service(r, handler)
+        info = json.loads((await r.hgetall("services"))["image-service"])
+        assert info["accept_files"] == ["image/*"]
 
 
 # ---------------------------------------------------------------------------

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 
@@ -62,6 +64,7 @@ class WorkerHandler:
 # ---------------------------------------------------------------------------
 
 POLL_INTERVAL = 0.05
+CANCEL_CHECK_INTERVAL = 2.0  # seconds between Redis cancel key checks
 PYTHON = sys.executable
 
 
@@ -217,7 +220,10 @@ class PythonHandler(WorkerHandler):
         # Monitor loop
         start = time.monotonic()
         killed_reason = None
+        cancelled = False
         wait_task = asyncio.create_task(proc.wait())
+        cancel_key = f"session:{sid}:cancel"
+        last_cancel_check = start
 
         while not wait_task.done():
             elapsed = time.monotonic() - start
@@ -225,6 +231,15 @@ class PythonHandler(WorkerHandler):
             if elapsed > max_runtime:
                 killed_reason = f"exceeded max runtime ({max_runtime}s)"
                 break
+
+            # Periodic cancellation check (~every 2s)
+            now = time.monotonic()
+            if now - last_cancel_check >= CANCEL_CHECK_INTERVAL:
+                last_cancel_check = now
+                with contextlib.suppress(Exception):
+                    if await rconn.get(cancel_key):
+                        cancelled = True
+                        break
 
             try:
                 ps = psutil.Process(proc.pid)
@@ -246,7 +261,7 @@ class PythonHandler(WorkerHandler):
 
             await asyncio.sleep(POLL_INTERVAL)
 
-        if killed_reason:
+        if killed_reason or cancelled:
             _kill_tree(proc.pid)
             try:
                 await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
@@ -254,7 +269,10 @@ class PythonHandler(WorkerHandler):
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
                 await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
-            result = HandlerResult(status="killed", exit_code=-1, error=killed_reason)
+            if cancelled:
+                result = HandlerResult(status="cancelled", exit_code=-1, error="cancelled by user")
+            else:
+                result = HandlerResult(status="killed", exit_code=-1, error=killed_reason)
         else:
             await asyncio.wait_for(asyncio.shield(wait_task), timeout=5)
             final_exit = proc.returncode
@@ -346,3 +364,245 @@ class TaskRunnerHandler(WorkerHandler):
                 error=str(exc),
                 logs=f"Error: {exc}\n",
             )
+
+
+# ---------------------------------------------------------------------------
+# Service handler — long-lived data processing services
+# ---------------------------------------------------------------------------
+
+SERVICE_RUNNER_TEMPLATE = """\
+import sys
+sys.path.insert(0, {worker_dir!r})
+from {module} import {cls}
+svc = {cls}()
+svc.run()
+"""
+
+
+class ServiceHandler(WorkerHandler):
+    """Manages a long-lived service subprocess.
+
+    The service process is started once and reused across sessions.
+    If it crashes it is automatically restarted on the next request.
+    Only one job is dispatched at a time (serialized by an asyncio lock);
+    scale horizontally with multiple worker replicas.
+    """
+
+    def __init__(
+        self, worker_type: str, worker_dir: str, module_name: str, class_name: str,
+    ):
+        self.worker_type = worker_type
+        self._worker_dir = worker_dir
+        self._module = module_name
+        self._class_name = class_name
+        self._proc = None
+        self._lock = asyncio.Lock()
+        self._runner_path: str | None = None
+        self._stderr_task = None
+
+    # -- Subprocess lifecycle --
+
+    async def _drain_stderr(self):
+        """Read stderr in the background to prevent pipe blocking."""
+        try:
+            while True:
+                line = await self._proc.stderr.readline()
+                if not line:
+                    break
+        except Exception:
+            pass
+
+    async def _start_service(self):
+        """Start (or restart) the service subprocess."""
+        if not self._runner_path:
+            runner_code = SERVICE_RUNNER_TEMPLATE.format(
+                worker_dir=self._worker_dir,
+                module=self._module,
+                cls=self._class_name,
+            )
+            fd, self._runner_path = tempfile.mkstemp(suffix=".py", prefix="flute_svc_")
+            os.write(fd, runner_code.encode())
+            os.close(fd)
+
+        self._proc = await asyncio.create_subprocess_exec(
+            PYTHON, "-u", self._runner_path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+        # Wait for the "ready" signal (up to 5 min for heavy model loading)
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            try:
+                raw = await asyncio.wait_for(
+                    self._proc.stdout.readline(), timeout=10,
+                )
+            except TimeoutError:
+                if self._proc.returncode is not None:
+                    raise RuntimeError("Service process died during startup") from None
+                continue
+            if not raw:
+                raise RuntimeError("Service process closed stdout during startup")
+            msg = json.loads(raw)
+            if msg.get("type") == "ready":
+                return
+            # log/other messages during setup — ignore here
+        raise RuntimeError("Service did not become ready within 5 minutes")
+
+    async def _ensure_service(self):
+        """Start the service if it isn't running."""
+        if self._proc is not None and self._proc.returncode is None:
+            return
+        await self._start_service()
+
+    # -- Job execution --
+
+    async def execute(self, spec, workdir, rconn, sid, channel):
+        async with self._lock:
+            try:
+                await self._ensure_service()
+            except Exception as exc:
+                return HandlerResult(
+                    status="error", exit_code=-1,
+                    error=f"Service failed to start: {exc}",
+                )
+
+            max_runtime = spec.get("max_runtime_seconds", 30)
+            max_log_lines = spec.get("max_log_lines", 0)
+            log_lines_key = f"session:{sid}:logs:lines" if max_log_lines > 0 else None
+
+            # Build and send the job message
+            job_msg = json.dumps({
+                "type": "job",
+                "job_id": sid,
+                "workdir": workdir,
+                "params": spec.get("params", {}),
+                "steps": spec.get("steps", []),
+                "quota_budget_seconds": spec.get("quota_budget_seconds", 3600),
+                "max_runtime_seconds": max_runtime,
+            }) + "\n"
+
+            try:
+                self._proc.stdin.write(job_msg.encode())
+                await self._proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                self._proc = None
+                return HandlerResult(
+                    status="error", exit_code=-1,
+                    error="Service process crashed (broken pipe)",
+                )
+
+            return await self._read_responses(
+                sid, channel, rconn, max_runtime,
+                log_lines_key=log_lines_key, max_log_lines=max_log_lines,
+            )
+
+    async def _read_responses(
+        self, sid, channel, rconn, max_runtime,
+        *, log_lines_key=None, max_log_lines=0,
+    ):
+        """Read stdout until done/error or timeout."""
+        logs: list[str] = []
+        start = time.monotonic()
+        buffer = log_lines_key and max_log_lines > 0
+        cancel_key = f"session:{sid}:cancel"
+
+        while True:
+            remaining = max_runtime - (time.monotonic() - start)
+            if remaining <= 0:
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, "")
+                return HandlerResult(
+                    status="killed", exit_code=-1,
+                    error=f"exceeded max runtime ({max_runtime}s)",
+                    logs="".join(logs),
+                )
+
+            try:
+                raw = await asyncio.wait_for(
+                    self._proc.stdout.readline(),
+                    timeout=min(remaining, 5),
+                )
+            except TimeoutError:
+                if self._proc.returncode is not None:
+                    self._proc = None
+                    with contextlib.suppress(Exception):
+                        await rconn.publish(channel, "")
+                    return HandlerResult(
+                        status="error", exit_code=-1,
+                        error="Service process crashed during execution",
+                        logs="".join(logs),
+                    )
+                # Check for cancellation on each timeout cycle (~every 5s)
+                with contextlib.suppress(Exception):
+                    if await rconn.get(cancel_key):
+                        with contextlib.suppress(Exception):
+                            await rconn.publish(channel, "")
+                        return HandlerResult(
+                            status="cancelled", exit_code=-1,
+                            error="cancelled by user",
+                            logs="".join(logs),
+                        )
+                continue
+
+            if not raw:
+                self._proc = None
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, "")
+                return HandlerResult(
+                    status="error", exit_code=-1,
+                    error="Service process closed stdout unexpectedly",
+                    logs="".join(logs),
+                )
+
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type")
+
+            if msg_type == "log":
+                text = msg.get("text", "")
+                logs.append(text)
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, text)
+                if buffer:
+                    with contextlib.suppress(Exception):
+                        await rconn.rpush(log_lines_key, text)
+                        await rconn.ltrim(log_lines_key, -max_log_lines, -1)
+
+            elif msg_type == "progress":
+                progress_json = json.dumps({
+                    "progress": msg.get("value", 0),
+                    "step": msg.get("step", ""),
+                    "eta_seconds": msg.get("eta_seconds"),
+                })
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, f"__progress__{progress_json}")
+                    await rconn.set(f"session:{sid}:progress", progress_json)
+
+            elif msg_type == "done":
+                perf = msg.get("perf", {})
+                if perf:
+                    with contextlib.suppress(Exception):
+                        await rconn.set(
+                            f"service:{self.worker_type}:perf",
+                            json.dumps(perf),
+                        )
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, "")
+                return HandlerResult(
+                    status="completed", exit_code=0, logs="".join(logs),
+                )
+
+            elif msg_type == "error":
+                with contextlib.suppress(Exception):
+                    await rconn.publish(channel, "")
+                return HandlerResult(
+                    status="error", exit_code=1,
+                    error=msg.get("error", "unknown error"),
+                    logs="".join(logs),
+                )

@@ -503,3 +503,220 @@ class TestServices:
         assert "text" in echo["task_schema"]["properties"]
         assert echo["description"] == "Echo service"
         assert echo["dependencies"] == ["pydantic"]
+
+
+class TestSubmitService:
+    @pytest.mark.asyncio
+    async def test_basic(self, client, fake_redis):
+        sid = await client.submit_service(
+            worker_type="image-proc", session_id="ss1",
+        )
+        assert sid == "ss1"
+        payload = json.loads(fake_redis.lists["session:queue:image-proc"][0])
+        assert payload["session_id"] == "ss1"
+        assert payload["worker_type"] == "image-proc"
+        assert payload["params"] == {}
+        assert payload["steps"] == []
+        assert payload["max_runtime_seconds"] == 30
+        assert payload["max_memory_mb"] == 512
+        assert payload["max_disk_mb"] == 50
+
+    @pytest.mark.asyncio
+    async def test_auto_id(self, client):
+        sid = await client.submit_service(worker_type="svc")
+        assert len(sid) == 12
+
+    @pytest.mark.asyncio
+    async def test_with_files(self, client, fake_redis):
+        await client.submit_service(
+            worker_type="svc", session_id="ss2",
+            input_files={"photo.png": b"png-data"},
+        )
+        payload = json.loads(fake_redis.lists["session:queue:svc"][0])
+        assert "input_files" in payload
+        assert base64.b64decode(payload["input_files"]["photo.png"]) == b"png-data"
+
+    @pytest.mark.asyncio
+    async def test_with_steps(self, client, fake_redis):
+        await client.submit_service(
+            worker_type="svc", session_id="ss3",
+            steps=["resize", "watermark"],
+        )
+        payload = json.loads(fake_redis.lists["session:queue:svc"][0])
+        assert payload["steps"] == ["resize", "watermark"]
+
+    @pytest.mark.asyncio
+    async def test_with_params(self, client, fake_redis):
+        await client.submit_service(
+            worker_type="svc", session_id="ss4",
+            params={"width": 800, "quality": 90},
+        )
+        payload = json.loads(fake_redis.lists["session:queue:svc"][0])
+        assert payload["params"] == {"width": 800, "quality": 90}
+
+    @pytest.mark.asyncio
+    async def test_clears_stale_keys(self, client, fake_redis):
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
+            await fake_redis.set(f"session:ss5:{suffix}", "stale")
+        await fake_redis.hset("session:ss5:output_files", "old.txt", "data")
+        await fake_redis.rpush("session:ss5:logs:lines", "old line")
+
+        await client.submit_service(worker_type="svc", session_id="ss5")
+
+        for suffix in ("status", "logs", "exit_code", "error", "workdir", "response"):
+            assert await fake_redis.get(f"session:ss5:{suffix}") is None
+        assert await fake_redis.hgetall("session:ss5:output_files") == {}
+        assert await fake_redis.lrange("session:ss5:logs:lines", 0, -1) == []
+
+    @pytest.mark.asyncio
+    async def test_with_user_id(self, client, fake_redis):
+        await client.submit_service(
+            worker_type="svc", session_id="ss6", user_id="alice",
+        )
+        payload = json.loads(fake_redis.lists["session:queue:svc"][0])
+        assert payload["user_id"] == "alice"
+
+
+class TestPipeline:
+    @pytest.mark.asyncio
+    async def test_single_step(self, client, fake_redis):
+        """Pipeline with one step works like submit_service + wait."""
+        # Mock wait to return a completed result with output files
+        async def mock_wait(sid, timeout=60):
+            return {
+                "session_id": sid,
+                "status": "completed",
+                "output_files": {
+                    "result.png": b"output-data",
+                },
+            }
+
+        client.wait = mock_wait
+
+        result = await client.pipeline(
+            [{"worker_type": "resize", "params": {"width": 100}}],
+            input_files={"photo.png": b"input-data"},
+        )
+        assert result["status"] == "completed"
+        assert result["output_files"]["result.png"] == b"output-data"
+
+        # Verify the job was submitted to the correct queue
+        payload = json.loads(fake_redis.lists["session:queue:resize"][0])
+        assert payload["params"] == {"width": 100}
+        assert base64.b64decode(payload["input_files"]["photo.png"]) == b"input-data"
+
+    @pytest.mark.asyncio
+    async def test_multi_step(self, client, fake_redis):
+        """Output files from step 1 become input for step 2."""
+        call_count = 0
+
+        async def mock_wait(sid, timeout=60):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "session_id": sid,
+                    "status": "completed",
+                    "output_files": {
+                        "intermediate.png": b"mid-data",
+                    },
+                }
+            return {
+                "session_id": sid,
+                "status": "completed",
+                "output_files": {
+                    "final.png": b"final-data",
+                },
+            }
+
+        client.wait = mock_wait
+
+        result = await client.pipeline(
+            [
+                {"worker_type": "resize", "params": {"width": 800}},
+                {"worker_type": "watermark", "steps": ["apply"]},
+            ],
+            input_files={"photo.png": b"original"},
+        )
+        assert result["status"] == "completed"
+        assert result["output_files"]["final.png"] == b"final-data"
+
+        # Step 2 should have received the output of step 1 as input
+        payloads_step2 = fake_redis.lists["session:queue:watermark"]
+        payload2 = json.loads(payloads_step2[0])
+        assert payload2["steps"] == ["apply"]
+        # The intermediate output file should be the input to step 2
+        assert base64.b64decode(
+            payload2["input_files"]["intermediate.png"]
+        ) == b"mid-data"
+
+    @pytest.mark.asyncio
+    async def test_stops_on_error(self, client, fake_redis):
+        """If any step fails, pipeline returns immediately."""
+        async def mock_wait(sid, timeout=60):
+            return {
+                "session_id": sid,
+                "status": "error",
+                "error": "service crashed",
+                "output_files": {},
+            }
+
+        client.wait = mock_wait
+
+        result = await client.pipeline(
+            [
+                {"worker_type": "resize"},
+                {"worker_type": "watermark"},
+            ],
+            input_files={"photo.png": b"data"},
+        )
+        assert result["status"] == "error"
+        # Second step should NOT have been submitted
+        assert "session:queue:watermark" not in fake_redis.lists
+
+
+class TestProgress:
+    @pytest.mark.asyncio
+    async def test_with_progress(self, client, fake_redis):
+        await fake_redis.set(
+            "session:p1:progress",
+            json.dumps({"progress": 0.5, "step": "resizing"}),
+        )
+        progress = await client.progress("p1")
+        assert progress["progress"] == 0.5
+        assert progress["step"] == "resizing"
+
+    @pytest.mark.asyncio
+    async def test_no_progress(self, client):
+        progress = await client.progress("no-such-session")
+        assert progress is None
+
+    @pytest.mark.asyncio
+    async def test_with_eta(self, client, fake_redis):
+        await fake_redis.set(
+            "session:p2:progress",
+            json.dumps({"progress": 0.75, "step": "encoding", "eta_seconds": 12}),
+        )
+        progress = await client.progress("p2")
+        assert progress["progress"] == 0.75
+        assert progress["eta_seconds"] == 12
+
+
+class TestCancel:
+    @pytest.mark.asyncio
+    async def test_cancel_sets_key(self, client, fake_redis):
+        result = await client.cancel("c1")
+        assert result is True
+        assert await fake_redis.get("session:c1:cancel") == "1"
+
+    @pytest.mark.asyncio
+    async def test_wait_recognises_cancelled(self, client, fake_redis):
+        await fake_redis.set("session:c2:status", "cancelled")
+        result = await client.wait("c2", timeout=2, poll=0.05)
+        assert result["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_clear_session_removes_cancel_key(self, client, fake_redis):
+        await fake_redis.set("session:c3:cancel", "1")
+        await client._clear_session_keys("c3")
+        assert await fake_redis.get("session:c3:cancel") is None

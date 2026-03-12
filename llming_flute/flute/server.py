@@ -32,6 +32,7 @@ from flute.handlers import (
     HANDLER_REGISTRY,
     HandlerResult,
     PythonHandler,
+    ServiceHandler,
     TaskRunnerHandler,
     WorkerHandler,
     _dir_size_mb,
@@ -48,6 +49,7 @@ from flute.worker_config import load_task_handler, load_worker_config
 __all__ = [
     "HandlerResult",
     "PythonHandler",
+    "ServiceHandler",
     "TaskRunnerHandler",
     "WorkerHandler",
     "_dir_size_mb",
@@ -104,7 +106,15 @@ def create_handler(worker_dir: str | None = None) -> WorkerHandler:
     wtype = config["type"]
     handler_ref = config.get("handler")
 
-    if wtype == "task-runner" and handler_ref:
+    if wtype == "service-runner" and handler_ref:
+        module_name, class_name = handler_ref.split(":")
+        handler = ServiceHandler(
+            worker_type=config["name"],
+            worker_dir=worker_dir,
+            module_name=module_name,
+            class_name=class_name,
+        )
+    elif wtype == "task-runner" and handler_ref:
         task_handler = load_task_handler(worker_dir, handler_ref)
         handler = TaskRunnerHandler(
             worker_type=config["name"],
@@ -236,7 +246,7 @@ async def run_session(spec: dict, rconn, handler: WorkerHandler):
 # ---------------------------------------------------------------------------
 
 
-async def _heartbeat(rconn, worker_type, worker_id, shutdown_event):
+async def _heartbeat(rconn, worker_type, worker_id, shutdown_event, handler=None):
     """Periodically update worker heartbeat in Redis."""
     key = f"{worker_type}:{worker_id}"
     try:
@@ -249,6 +259,9 @@ async def _heartbeat(rconn, worker_type, worker_id, shutdown_event):
             await rconn.hset("workers", key, info)
             # Keep infrastructure keys alive while this worker runs
             await rconn.expire("workers", INFRA_TTL)
+            # Re-register service info each heartbeat (survives key expiry)
+            if handler is not None:
+                await _register_service(rconn, handler)
             await rconn.expire("services", INFRA_TTL)
             await rconn.set("quota:__config:rules", QUOTA_RULES, ex=INFRA_TTL)
             with contextlib.suppress(TimeoutError):
@@ -272,7 +285,11 @@ async def _register_service(rconn, handler: WorkerHandler):
         "description": config.get("description", ""),
         "dependencies": config.get("dependencies", []),
     }
-    if isinstance(handler, TaskRunnerHandler):
+    if isinstance(handler, ServiceHandler):
+        info["type"] = "service-runner"
+        info["operations"] = config.get("operations", [])
+        info["accept_files"] = config.get("accept_files", [])
+    elif isinstance(handler, TaskRunnerHandler):
         info["type"] = "task-runner"
         th = handler.task_handler
         info["task_schema"] = th.task_model.model_json_schema()
@@ -306,7 +323,7 @@ async def serve(rconn, shutdown_event, max_concurrent, handler=None):
 
     worker_id = uuid.uuid4().hex[:8]
     heartbeat_task = asyncio.create_task(
-        _heartbeat(rconn, wt, worker_id, shutdown_event)
+        _heartbeat(rconn, wt, worker_id, shutdown_event, handler)
     )
 
     slots = asyncio.Semaphore(max_concurrent)
