@@ -152,12 +152,20 @@ def _make_preexec(max_disk_mb: int):
 RUNNER_TEMPLATE = """\
 import os, sys, traceback
 
-# Clear sensitive environment variables before running user code
-_safe = {{'HOME', 'PATH', 'LANG', 'TERM', 'TMPDIR', 'PYTHONPATH',
-         'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'}}
-for _k in list(os.environ):
-    if _k not in _safe:
-        del os.environ[_k]
+# Replace environment with a minimal, sanitized set
+_clean = {{
+    'HOME': {workdir!r},
+    'TMPDIR': {workdir!r},
+    'PATH': '/usr/local/bin:/usr/bin:/bin',
+    'LANG': 'C.UTF-8',
+    'TERM': 'dumb',
+}}
+# Preserve thread-count hints (safe, numeric-only)
+for _tk in ('OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    if _tk in os.environ:
+        _clean[_tk] = os.environ[_tk]
+os.environ.clear()
+os.environ.update(_clean)
 
 os.chdir({workdir!r})
 

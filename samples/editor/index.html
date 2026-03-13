@@ -853,12 +853,15 @@ async function pollStatus(sid) {
 }
 
 function showResult(r) {
-  setStatus(r.status, `${r.status}${r.exit_code !== null ? ` (exit ${r.exit_code})` : ''}`);
-  updateLogs(r.log_lines.length ? r.log_lines : r.logs ? [r.logs] : []);
+  const statusLabel = r.status === 'cancelled' ? 'cancelled' : `${r.status}${r.exit_code !== null ? ` (exit ${r.exit_code})` : ''}`;
+  setStatus(r.status, statusLabel);
+  const lines = r.log_lines.length ? r.log_lines : r.logs ? [r.logs] : [];
+  if (r.status === 'cancelled') lines.push('\n--- cancelled ---\n');
+  updateLogs(lines);
 
-  // Error
+  // Error — for cancellation, append to logs instead of showing separate label
   const errBox = document.getElementById('error-box');
-  if (r.error) {
+  if (r.error && r.status !== 'cancelled') {
     errBox.className = 'error-text';
     errBox.textContent = r.error;
     errBox.classList.remove('hidden');
@@ -1001,8 +1004,14 @@ async function switchEnv() {
 async function loadServices() {
   try {
     const resp = await fetch('/api/services');
-    availableServices = await resp.json();
+    const fresh = await resp.json();
+    // Only rebuild dropdown if the service list actually changed
+    const oldKeys = availableServices.map(s => s.worker_type).sort().join(',');
+    const newKeys = fresh.map(s => s.worker_type).sort().join(',');
+    if (oldKeys === newKeys && availableServices.length > 0) return;
+    availableServices = fresh;
     const sel = document.getElementById('service-selector');
+    const prev = sel.value;
     // Reset to just Python, then add services
     sel.innerHTML = '<option value="python">Python</option>';
     for (const svc of availableServices) {
@@ -1013,12 +1022,13 @@ async function loadServices() {
         sel.appendChild(opt);
       }
     }
-    // Restore endpoint selection if still valid
-    if (serviceMode && selectedService) {
+    // Restore previous selection if still valid
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    else if (serviceMode && selectedService) {
       const still = availableServices.find(s => s.worker_type === selectedService.worker_type);
       if (still) sel.value = selectedService.worker_type;
     }
-    // Always sync UI state after repopulating
+    // Sync UI state after repopulating
     switchEndpoint();
   } catch (e) { /* silent */ }
 }
@@ -1063,6 +1073,9 @@ async function loadEnvFooter() {
   }
   renderTabs();
   codeEditor.refresh();
+
+  // Periodically refresh services (workers may come online with delay)
+  setInterval(loadServices, 3000);
 })();
 </script>
 </body>
