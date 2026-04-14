@@ -320,6 +320,7 @@ class SessionClient:
             task_schema:     dict | None -- Pydantic JSON schema for task input (task runners)
             response_schema: dict | None -- Pydantic JSON schema for response (task runners)
             description:     str  -- human-readable description
+            samples:         dict | None -- sample index with categories
         """
         await self._ensure_connected()
         raw = await self.r.hgetall("services")
@@ -327,3 +328,11 @@ class SessionClient:
         for val in raw.values():
             result.append(json.loads(val))
         return result
+
+    async def sample_source(self, worker_type: str, filename: str) -> str | None:
+        """Fetch the source code of a sample script from a worker.
+
+        Returns the source string, or None if not found.
+        """
+        await self._ensure_connected()
+        return await self.r.hget(f"samples:{worker_type}", filename)

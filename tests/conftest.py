@@ -89,6 +89,9 @@ class FakeRedis:
     async def hset(self, key, field, val):
         self.hashes.setdefault(key, {})[field] = val
 
+    async def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
+
     async def hgetall(self, key):
         return dict(self.hashes.get(key, {}))
 

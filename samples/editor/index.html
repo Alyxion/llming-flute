@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Flute Editor</title>
+<!-- CodeMirror 5.65.18 (MIT) — https://codemirror.net -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/theme/dracula.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/addon/hint/show-hint.min.css">
@@ -17,7 +18,8 @@
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
 header { display: flex; align-items: center; gap: 16px; padding: 8px 16px;
-  background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
+  position: relative; z-index: 100; }
 header h1 { font-size: 16px; font-weight: 600; color: var(--blue); white-space: nowrap; }
 .controls { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 .controls label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
@@ -110,12 +112,92 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
   display: none; }
 #service-drop-hint:hover { border-color: var(--border); }
 #service-drop-hint .big { font-size: 32px; margin-bottom: 8px; opacity: .5; }
+
+/* --- UI Renderer --- */
+#ui-panel { display: none; flex-direction: column; overflow: hidden; flex: 1; min-height: 0; }
+#ui-panel.active { display: flex; }
+.ui-dismiss-bar { display: flex; align-items: center; padding: 4px 8px; background: var(--bg2);
+  border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.ui-dismiss-bar button { background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 4px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+.ui-dismiss-bar button:hover { color: var(--text); border-color: var(--text); }
+/* Document flow: vertical scroll by default (chat-friendly) */
+.ui-container { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 8px; gap: 12px; }
+.ui-container.ui-layout-mode { overflow: hidden; padding: 0; gap: 0; }
+.ui-cell { position: relative; }
+/* Document-mode cells get natural sizing with margins */
+.ui-container > .ui-cell { min-height: 0; }
+/* Explicit layout modes */
+.ui-split-h { display: flex; flex-direction: row; flex: 1; overflow: hidden; }
+.ui-split-v { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.ui-split-h > .ui-cell, .ui-split-v > .ui-cell { overflow: auto; min-width: 0; min-height: 0; }
+.ui-grid { display: grid; gap: 8px; flex: 1; overflow: auto; padding: 8px; }
+.ui-tabs-bar { display: flex; gap: 2px; background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 0 4px; overflow-x: auto; flex-shrink: 0; }
+.ui-tab-btn { padding: 6px 14px; font-size: 12px; background: none; border: none; color: var(--muted);
+  cursor: pointer; border-bottom: 2px solid transparent; }
+.ui-tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+.ui-tab-content { display: none; flex: 1; overflow: auto; }
+.ui-tab-content.active { display: flex; flex-direction: column; }
+.ui-three-canvas { width: 100%; height: 100%; display: block; }
+/* Plotly/Three wrappers */
+.ui-plotly-wrap { width: 100%; height: 100%; }
+.ui-three-wrap { width: 100%; height: 100%; overflow: hidden; }
+/* Document mode: intrinsic heights so content flows like a chat message */
+.ui-container:not(.ui-layout-mode) > .ui-cell > .ui-plotly-wrap { height: 400px; }
+.ui-container:not(.ui-layout-mode) > .ui-cell > .ui-three-wrap { height: 400px; border-radius: 6px; }
+.ui-table-wrap { padding: 8px; overflow: auto; }
+.ui-table-wrap table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ui-table-wrap th { text-align: left; padding: 6px 10px; background: var(--bg3); color: var(--muted);
+  font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .05em;
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; }
+.ui-table-wrap td { padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.ui-text-block { padding: 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.ui-image-wrap { padding: 8px; text-align: center; }
+.ui-image-wrap img { max-width: 100%; border-radius: 4px; }
+.ui-controls-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 12px;
+  background: var(--bg2); border-top: 1px solid var(--border); flex-shrink: 0; }
+.ui-control { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.ui-control label { color: var(--muted); white-space: nowrap; }
+.ui-control input[type="range"] { width: 120px; accent-color: var(--blue); }
+.ui-control input[type="number"], .ui-control input[type="text"] {
+  background: var(--bg3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; font-size: 12px; width: 100px; }
+.ui-control select { background: var(--bg3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+.ui-submit-btn { background: var(--blue); color: #1e1e2e; border: none; border-radius: 4px;
+  padding: 5px 16px; font-size: 12px; font-weight: 600; cursor: pointer; margin-left: auto; }
+.ui-submit-btn:hover { filter: brightness(1.1); }
+.ui-file-drop-zone { border: 2px dashed var(--border); border-radius: 6px; padding: 12px;
+  text-align: center; color: var(--muted); font-size: 12px; cursor: pointer; min-width: 120px; }
+.ui-file-drop-zone:hover, .ui-file-drop-zone.dragover { border-color: var(--blue); color: var(--blue); }
+
+/* --- Samples menu --- */
+#samples-btn { background: none; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; line-height: 1.4; }
+#samples-btn:hover { color: var(--text); border-color: var(--blue); }
+#samples-menu { display: none; position: fixed;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  min-width: 240px; max-height: 380px; overflow-y: auto; z-index: 10000;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#samples-menu.open { display: block; }
+.samples-cat { padding: 5px 10px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg2); }
+.samples-cat:first-child { border-radius: 6px 6px 0 0; }
+.sample-item { display: block; padding: 5px 10px; font-size: 12px; cursor: pointer;
+  border-bottom: 1px solid var(--border); transition: background .1s; }
+.sample-item:hover { background: var(--bg3); }
+.sample-item:last-child { border-bottom: none; }
+.sample-item .title { color: var(--text); font-weight: 500; }
+.sample-item .desc { color: var(--muted); font-size: 11px; margin-top: 1px; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Flute</h1>
+  <button id="samples-btn" onclick="toggleSamplesMenu()">samples</button>
   <div class="controls">
     <label><select id="env-selector" onchange="switchEnv()" title="Switch environment"
       style="background:var(--bg);border-color:var(--blue);color:var(--blue);font-weight:600;padding:3px 8px;">
@@ -147,22 +229,33 @@ main { display: grid; grid-template-columns: 1fr 380px; flex: 1; min-height: 0; 
 
 <main>
   <div id="editor-panel">
-    <textarea id="code">import json, os
+    <textarea id="code">import json
+from flute.ui import load_params
+from pydantic import BaseModel
 
-# Read parameters from the side panel
-params = json.load(open('input.json')) if os.path.exists('input.json') else {}
-print(f"Params: {params}")
+
+class Params(BaseModel):
+    name: str = "world"
+
+
+p = load_params(Params)
+print(f"Params: {p}")
 
 # Your code here...
-result = {"message": "Hello from Flute!", "echo": params}
+result = {"message": f"Hello from Flute, {p.name}!", "echo": p.model_dump()}
 
 # Write result (shown in the output panel)
-json.dump(result, open('output.json', 'w'))
+json.dump(result, open("output.json", "w"))
 print("Done!")
 </textarea>
     <div id="service-drop-hint">
       <div class="big" id="drop-hint-icon">Drop file here</div>
       <div id="drop-hint-text">or use the file picker on the right</div>
+    </div>
+    <div id="ui-panel">
+      <div class="ui-dismiss-bar"><button onclick="dismissUI()">&#x2190; Editor</button></div>
+      <div id="ui-container" class="ui-container"></div>
+      <div id="ui-controls-bar" class="ui-controls-bar" style="display:none"></div>
     </div>
   </div>
   <div id="side-panel">
@@ -199,6 +292,10 @@ print("Done!")
 
 <div id="status-footer"></div>
 
+<!-- Vendor libraries (standalone, no CDN) — see vendor/LICENSES.md for attributions -->
+<script type="importmap">{"imports":{"three":"/vendor/three.module.min.js","three/addons/controls/OrbitControls":"/vendor/three-orbit-controls.module.js"}}</script>
+<script src="/vendor/plotly-basic.min.js"></script>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/python/python.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.18/mode/javascript/javascript.min.js"></script>
@@ -220,17 +317,23 @@ let tabs = [];       // [{id, name, code, params}]
 let activeTabId = null;
 let saveTimer = null;
 
-const DEFAULT_CODE = `import json, os
+const DEFAULT_CODE = `import json
+from flute.ui import load_params
+from pydantic import BaseModel
 
-# Read parameters from the side panel
-params = json.load(open('input.json')) if os.path.exists('input.json') else {}
-print(f"Params: {params}")
+
+class Params(BaseModel):
+    name: str = "world"
+
+
+p = load_params(Params)
+print(f"Params: {p}")
 
 # Your code here...
-result = {"message": "Hello from Flute!", "echo": params}
+result = {"message": f"Hello from Flute, {p.name}!", "echo": p.model_dump()}
 
 # Write result (shown in the output panel)
-json.dump(result, open('output.json', 'w'))
+json.dump(result, open("output.json", "w"))
 print("Done!")`;
 
 function openDB() {
@@ -790,6 +893,7 @@ async function runCode() {
   btn.textContent = 'Cancel'; btn.classList.add('running');
   setStatus('running', 'Submitting...');
   clearOutput();
+  // Don't dismiss UI — keep it visible for in-place exchange on re-run
   updateProgress(null);
 
   const body = {
@@ -865,6 +969,17 @@ function showResult(r) {
     errBox.className = 'error-text';
     errBox.textContent = r.error;
     errBox.classList.remove('hidden');
+  }
+
+  // UI descriptor (ui.json) — render interactive UI
+  if (r.output_files['ui.json']) {
+    try {
+      const uiDesc = JSON.parse(atob(r.output_files['ui.json']));
+      renderUI(uiDesc, r.output_files);
+      delete r.output_files['ui.json'];
+    } catch (e) { /* not valid UI descriptor, skip */ }
+  } else {
+    dismissUI();
   }
 
   // Result JSON (output.json)
@@ -1049,6 +1164,576 @@ async function loadEnvFooter() {
   } catch (e) { /* silent */ }
 }
 
+// --- Samples menu ---
+let samplesIndex = {};  // { worker_type: { categories: [...] } }
+
+async function loadSamplesIndex() {
+  try {
+    const resp = await fetch('/api/samples');
+    samplesIndex = await resp.json();
+    buildSamplesMenu();
+  } catch (e) { /* silent */ }
+}
+
+function buildSamplesMenu() {
+  const menu = document.getElementById('samples-menu');
+  menu.innerHTML = '';
+  // Flatten all worker_type samples into the menu
+  for (const [wt, index] of Object.entries(samplesIndex)) {
+    for (const cat of (index.categories || [])) {
+      const header = document.createElement('div');
+      header.className = 'samples-cat';
+      header.textContent = cat.name;
+      menu.appendChild(header);
+      for (const item of (cat.items || [])) {
+        const el = document.createElement('div');
+        el.className = 'sample-item';
+        el.innerHTML = `<div class="title">${esc(item.title)}</div>` +
+          (item.description ? `<div class="desc">${esc(item.description)}</div>` : '');
+        el.addEventListener('click', () => loadSample(wt, item));
+        menu.appendChild(el);
+      }
+    }
+  }
+  if (menu.children.length === 0) {
+    menu.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">' +
+      'No samples available — workers not connected</div>';
+  }
+}
+
+function toggleSamplesMenu() {
+  const menu = document.getElementById('samples-menu');
+  const btn = document.getElementById('samples-btn');
+  const wasOpen = menu.classList.contains('open');
+  menu.classList.toggle('open');
+  if (!wasOpen) {
+    const rect = btn.getBoundingClientRect();
+    menu.style.top = rect.bottom + 4 + 'px';
+    menu.style.left = rect.left + 'px';
+    loadSamplesIndex();
+  }
+}
+
+// Close samples menu on outside click
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('samples-menu');
+  const btn = document.getElementById('samples-btn');
+  if (!menu.contains(e.target) && e.target !== btn) {
+    menu.classList.remove('open');
+  }
+});
+
+async function loadSample(workerType, item) {
+  document.getElementById('samples-menu').classList.remove('open');
+  try {
+    const resp = await fetch(`/api/sample/${encodeURIComponent(workerType)}/${encodeURIComponent(item.file)}`);
+    if (!resp.ok) { setStatus('error', 'Failed to load sample'); return; }
+    const data = await resp.json();
+    // Ensure we're in Python endpoint mode
+    const sel = document.getElementById('service-selector');
+    if (sel.value !== 'python') {
+      sel.value = 'python';
+      switchEndpoint();
+    }
+    // Load into a new tab
+    createTab(item.title + '.py', data.code, '{}');
+    setStatus('idle', `Loaded: ${item.title}`);
+  } catch (e) {
+    setStatus('error', `Load sample: ${e.message}`);
+  }
+}
+
+// --- UI Renderer ---
+const ALLOWED_COMPONENT_TYPES = new Set(['plotly', 'table', 'three', 'text', 'image']);
+const ALLOWED_LAYOUT_TYPES = new Set(['split-h', 'split-v', 'tabs', 'grid']);
+const ALLOWED_CONTROL_TYPES = new Set(['slider', 'number', 'text', 'select', 'checkbox', 'file-drop']);
+const MAX_COMPONENTS = 20;
+const MAX_CONTROLS = 30;
+
+function sanitizeDescriptor(desc) {
+  if (!desc || typeof desc !== 'object' || desc.version !== 1) return null;
+  if (!Array.isArray(desc.components)) return null;
+  const clean = { version: 1, components: [] };
+  for (const c of desc.components.slice(0, MAX_COMPONENTS)) {
+    if (!c || !ALLOWED_COMPONENT_TYPES.has(c.type)) continue;
+    clean.components.push(c);
+  }
+  if (desc.layout && ALLOWED_LAYOUT_TYPES.has(desc.layout.type)) clean.layout = desc.layout;
+  if (Array.isArray(desc.controls)) {
+    clean.controls = desc.controls.filter(c => c && ALLOWED_CONTROL_TYPES.has(c.type)).slice(0, MAX_CONTROLS);
+  }
+  return clean;
+}
+
+function renderUI(desc, outputFiles) {
+  const panel = document.getElementById('ui-panel');
+  const container = document.getElementById('ui-container');
+  const controlsBar = document.getElementById('ui-controls-bar');
+  container.innerHTML = '';
+  controlsBar.innerHTML = '';
+  controlsBar.style.display = 'none';
+
+  const clean = sanitizeDescriptor(desc);
+  if (!clean || clean.components.length === 0) { panel.classList.remove('active'); return; }
+
+  // Switch to UI view: hide editor, show UI panel (keep side panel visible)
+  panel.classList.add('active');
+  document.querySelector('#editor-panel .CodeMirror').style.display = 'none';
+  document.getElementById('tab-bar').style.display = 'none';
+
+  const hasLayout = !!clean.layout;
+  container.classList.toggle('ui-layout-mode', hasLayout);
+
+  if (hasLayout) {
+    // Dashboard mode: explicit layout fills the panel
+    const root = buildLayout(clean.layout, clean.components, outputFiles);
+    container.appendChild(root);
+  } else {
+    // Document mode: vertical flow, each component in its own block
+    clean.components.forEach(comp => {
+      const cell = document.createElement('div');
+      cell.className = 'ui-cell';
+      renderComponent(comp, cell, outputFiles);
+      container.appendChild(cell);
+    });
+  }
+
+  // Controls
+  if (clean.controls && clean.controls.length > 0) {
+    controlsBar.style.display = 'flex';
+    buildControls(clean.controls, controlsBar);
+  }
+}
+
+function buildLayout(layout, components, outputFiles) {
+  if (!layout || components.length === 1) {
+    const cell = document.createElement('div');
+    cell.className = 'ui-cell';
+    cell.style.flex = '1';
+    if (components.length > 0) renderComponent(components[0], cell, outputFiles);
+    return cell;
+  }
+
+  if (layout.type === 'tabs') {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'flex';
+    wrap.style.flexDirection = 'column';
+    wrap.style.flex = '1';
+    wrap.style.overflow = 'hidden';
+    const bar = document.createElement('div');
+    bar.className = 'ui-tabs-bar';
+    const contents = [];
+    components.forEach((comp, i) => {
+      const label = (layout.labels && layout.labels[i]) || comp.id || `Tab ${i + 1}`;
+      const btn = document.createElement('button');
+      btn.className = 'ui-tab-btn' + (i === 0 ? ' active' : '');
+      btn.textContent = label;
+      const content = document.createElement('div');
+      content.className = 'ui-tab-content' + (i === 0 ? ' active' : '');
+      renderComponent(comp, content, outputFiles);
+      btn.onclick = () => {
+        bar.querySelectorAll('.ui-tab-btn').forEach(b => b.classList.remove('active'));
+        contents.forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        content.classList.add('active');
+      };
+      bar.appendChild(btn);
+      contents.push(content);
+    });
+    wrap.appendChild(bar);
+    contents.forEach(c => wrap.appendChild(c));
+    return wrap;
+  }
+
+  if (layout.type === 'grid') {
+    const grid = document.createElement('div');
+    grid.className = 'ui-grid';
+    grid.style.gridTemplateColumns = `repeat(${layout.columns || 2}, 1fr)`;
+    components.forEach(comp => {
+      const cell = document.createElement('div');
+      cell.className = 'ui-cell';
+      renderComponent(comp, cell, outputFiles);
+      grid.appendChild(cell);
+    });
+    return grid;
+  }
+
+  // split-h or split-v
+  const container = document.createElement('div');
+  container.className = layout.type === 'split-h' ? 'ui-split-h' : 'ui-split-v';
+  const ratios = layout.ratios || components.map(() => 1);
+  const total = ratios.reduce((a, b) => a + b, 0);
+  components.forEach((comp, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'ui-cell';
+    const pct = ((ratios[i] || 1) / total * 100).toFixed(2);
+    cell.style.flex = `0 0 ${pct}%`;
+    if (layout.type === 'split-h') cell.style.borderRight = '1px solid var(--border)';
+    else cell.style.borderBottom = '1px solid var(--border)';
+    renderComponent(comp, cell, outputFiles);
+    container.appendChild(cell);
+  });
+  // Remove border from last cell
+  if (container.lastElementChild) {
+    container.lastElementChild.style.borderRight = '';
+    container.lastElementChild.style.borderBottom = '';
+  }
+  return container;
+}
+
+function renderComponent(comp, container, outputFiles) {
+  switch (comp.type) {
+    case 'plotly': renderPlotly(comp, container); break;
+    case 'table': renderTable(comp, container); break;
+    case 'three': renderThree(comp, container); break;
+    case 'text': renderText(comp, container); break;
+    case 'image': renderImage(comp, container, outputFiles); break;
+  }
+}
+
+function renderPlotly(comp, container) {
+  const div = document.createElement('div');
+  div.className = 'ui-plotly-wrap';
+  container.appendChild(div);
+  const plotLayout = Object.assign({
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(30,30,46,0.8)',
+    font: { color: '#cdd6f4', size: 12 },
+    margin: { l: 50, r: 20, t: 40, b: 40 },
+  }, comp.layout || {});
+  const config = Object.assign({ responsive: true, displaylogo: false }, comp.config || {});
+  if (typeof Plotly !== 'undefined') Plotly.newPlot(div, comp.data, plotLayout, config);
+}
+
+function renderTable(comp, container) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ui-table-wrap';
+  if (comp.title) {
+    const h = document.createElement('div');
+    h.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text)';
+    h.textContent = comp.title;
+    wrap.appendChild(h);
+  }
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  for (const col of comp.columns) {
+    const th = document.createElement('th');
+    th.textContent = col.label || col.name || col.field || '';
+    headerRow.appendChild(th);
+  }
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const row of comp.rows) {
+    const tr = document.createElement('tr');
+    for (const col of comp.columns) {
+      const td = document.createElement('td');
+      const field = col.field || col.name || '';
+      td.textContent = row[field] != null ? String(row[field]) : '';
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+async function renderThree(comp, container) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ui-three-wrap';
+  container.appendChild(wrap);
+  const canvas = document.createElement('canvas');
+  canvas.className = 'ui-three-canvas';
+  wrap.appendChild(canvas);
+  try {
+    const THREE = await import('three');
+    const { OrbitControls } = await import('three/addons/controls/OrbitControls');
+
+    const scene = new THREE.Scene();
+    const sd = comp.scene || {};
+    scene.background = new THREE.Color(sd.background || '#1a1a2e');
+
+    // Lights
+    const ambientIntensity = sd.ambient_light != null ? sd.ambient_light : 0.4;
+    scene.add(new THREE.AmbientLight(0xffffff, ambientIntensity));
+    if (sd.directional_light) {
+      const dl = sd.directional_light;
+      const light = new THREE.DirectionalLight(0xffffff, dl.intensity || 0.8);
+      if (dl.position) light.position.set(...dl.position);
+      else light.position.set(5, 10, 7);
+      scene.add(light);
+    } else {
+      const light = new THREE.DirectionalLight(0xffffff, 0.8);
+      light.position.set(5, 10, 7);
+      scene.add(light);
+    }
+
+    // Camera
+    const cam = comp.camera || {};
+    const w = wrap.clientWidth || 400;
+    const h = wrap.clientHeight || 300;
+    const camera = new THREE.PerspectiveCamera(cam.fov || 60, w / h, 0.1, 1000);
+    const cp = cam.position || [5, 5, 5];
+    camera.position.set(...cp);
+    if (cam.lookAt) camera.lookAt(new THREE.Vector3(...cam.lookAt));
+    else camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    if (comp.controls !== false) {
+      const ctrl = new OrbitControls(camera, renderer.domElement);
+      ctrl.enableDamping = true;
+    }
+
+    // Build objects
+    for (const obj of (sd.objects || [])) {
+      const mesh = buildThreeObject(THREE, obj);
+      if (mesh) scene.add(mesh);
+    }
+
+    // Render loop
+    function animate() {
+      if (!document.getElementById('ui-panel').classList.contains('active')) return;
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // Resize
+    const ro = new ResizeObserver(() => {
+      const cw = wrap.clientWidth;
+      const ch = wrap.clientHeight;
+      if (cw && ch) {
+        camera.aspect = cw / ch;
+        camera.updateProjectionMatrix();
+        renderer.setSize(cw, ch);
+      }
+    });
+    ro.observe(wrap);
+  } catch (e) {
+    wrap.innerHTML = `<div class="ui-text-block" style="color:var(--red)">Three.js error: ${esc(e.message)}</div>`;
+  }
+}
+
+function buildThreeObject(THREE, obj) {
+  const color = obj.color ? new THREE.Color(obj.color) : new THREE.Color(0x89b4fa);
+  const pos = obj.position || [0, 0, 0];
+
+  switch (obj.type) {
+    case 'box': {
+      const s = obj.size || [1, 1, 1];
+      const geom = new THREE.BoxGeometry(...s);
+      const mat = new THREE.MeshStandardMaterial({ color });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(...pos);
+      if (obj.rotation) mesh.rotation.set(...obj.rotation);
+      return mesh;
+    }
+    case 'sphere': {
+      const geom = new THREE.SphereGeometry(obj.radius || 0.5, 32, 32);
+      const mat = new THREE.MeshStandardMaterial({ color });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(...pos);
+      return mesh;
+    }
+    case 'cylinder': {
+      const geom = new THREE.CylinderGeometry(obj.radiusTop || 0.5, obj.radiusBottom || 0.5, obj.height || 1, 32);
+      const mat = new THREE.MeshStandardMaterial({ color });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(...pos);
+      return mesh;
+    }
+    case 'line': {
+      const points = (obj.points || []).map(p => new THREE.Vector3(...p));
+      if (points.length < 2) return null;
+      const geom = new THREE.BufferGeometry().setFromPoints(points);
+      return new THREE.Line(geom, new THREE.LineBasicMaterial({ color }));
+    }
+    case 'bezier': {
+      const pts = obj.points || [];
+      if (pts.length < 4) return null;
+      const curve = new THREE.CubicBezierCurve3(
+        new THREE.Vector3(...pts[0]), new THREE.Vector3(...pts[1]),
+        new THREE.Vector3(...pts[2]), new THREE.Vector3(...pts[3])
+      );
+      const geom = new THREE.BufferGeometry().setFromPoints(curve.getPoints(obj.segments || 50));
+      return new THREE.Line(geom, new THREE.LineBasicMaterial({ color }));
+    }
+    case 'catmull': {
+      const pts = (obj.points || []).map(p => new THREE.Vector3(...p));
+      if (pts.length < 2) return null;
+      const curve = new THREE.CatmullRomCurve3(pts, !!obj.closed);
+      const geom = new THREE.BufferGeometry().setFromPoints(curve.getPoints(obj.segments || 50));
+      return new THREE.Line(geom, new THREE.LineBasicMaterial({ color }));
+    }
+    case 'surface': {
+      const range = obj.range || [[-3, 3], [-3, 3]];
+      const res = obj.resolution || 50;
+      const geom = new THREE.PlaneGeometry(
+        range[0][1] - range[0][0], range[1][1] - range[1][0], res, res
+      );
+      const posAttr = geom.attributes.position;
+      const fn = obj.func || 'Math.sin(x)*Math.cos(y)';
+      for (let i = 0; i < posAttr.count; i++) {
+        const x = posAttr.getX(i) + (range[0][0] + range[0][1]) / 2;
+        const y = posAttr.getY(i) + (range[1][0] + range[1][1]) / 2;
+        try { posAttr.setZ(i, new Function('x', 'y', `return ${fn}`)(x, y)); }
+        catch { posAttr.setZ(i, 0); }
+      }
+      geom.computeVertexNormals();
+      const mat = new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide, wireframe: !!obj.wireframe });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(...pos);
+      return mesh;
+    }
+    case 'mesh': {
+      const geom = new THREE.BufferGeometry();
+      if (obj.vertices) geom.setAttribute('position', new THREE.Float32BufferAttribute(obj.vertices.flat(), 3));
+      if (obj.faces) geom.setIndex(obj.faces.flat());
+      geom.computeVertexNormals();
+      const mat = new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(...pos);
+      return mesh;
+    }
+    default: return null;
+  }
+}
+
+function renderText(comp, container) {
+  const div = document.createElement('div');
+  div.className = 'ui-text-block';
+  div.textContent = comp.content || '';
+  container.appendChild(div);
+}
+
+function renderImage(comp, container, outputFiles) {
+  const div = document.createElement('div');
+  div.className = 'ui-image-wrap';
+  const b64 = outputFiles && outputFiles[comp.filename];
+  if (b64) {
+    const ext = (comp.filename || '').split('.').pop().toLowerCase();
+    const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    const img = document.createElement('img');
+    img.src = `data:${mime};base64,${b64}`;
+    img.alt = comp.alt || comp.filename || '';
+    div.appendChild(img);
+  } else {
+    div.textContent = `Image not found: ${comp.filename || '(none)'}`;
+    div.style.color = 'var(--muted)';
+  }
+  container.appendChild(div);
+}
+
+function buildControls(controls, bar) {
+  for (const ctrl of controls) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ui-control';
+    const lbl = ctrl.label || ctrl.name;
+    switch (ctrl.type) {
+      case 'slider': {
+        wrap.innerHTML = `<label>${esc(lbl)}</label>
+          <input type="range" min="${ctrl.min}" max="${ctrl.max}" step="${ctrl.step}" value="${ctrl.value}"
+            data-name="${esc(ctrl.name)}">
+          <span style="font-size:11px;color:var(--muted);min-width:30px">${ctrl.value}</span>`;
+        const input = wrap.querySelector('input');
+        const span = wrap.querySelector('span');
+        let sliderTimer = null;
+        input.oninput = () => {
+          span.textContent = input.value;
+          clearTimeout(sliderTimer);
+          sliderTimer = setTimeout(() => rerunWithControls(), 400);
+        };
+        break;
+      }
+      case 'number': {
+        wrap.innerHTML = `<label>${esc(lbl)}</label>
+          <input type="number" value="${ctrl.value}" data-name="${esc(ctrl.name)}">`;
+        break;
+      }
+      case 'text': {
+        wrap.innerHTML = `<label>${esc(lbl)}</label>
+          <input type="text" value="${esc(ctrl.value || '')}" data-name="${esc(ctrl.name)}">`;
+        break;
+      }
+      case 'select': {
+        const opts = (ctrl.options || []).map(o =>
+          `<option value="${esc(o)}"${o === ctrl.value ? ' selected' : ''}>${esc(o)}</option>`
+        ).join('');
+        wrap.innerHTML = `<label>${esc(lbl)}</label><select data-name="${esc(ctrl.name)}">${opts}</select>`;
+        break;
+      }
+      case 'checkbox': {
+        wrap.innerHTML = `<label><input type="checkbox" data-name="${esc(ctrl.name)}"${ctrl.value ? ' checked' : ''}> ${esc(lbl)}</label>`;
+        break;
+      }
+      case 'file-drop': {
+        const zone = document.createElement('div');
+        zone.className = 'ui-file-drop-zone';
+        zone.textContent = lbl || `Drop ${ctrl.accept || 'file'} here`;
+        zone.dataset.name = ctrl.name;
+        zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+        zone.addEventListener('drop', e => {
+          e.preventDefault(); zone.classList.remove('dragover');
+          for (const f of e.dataTransfer.files) {
+            const reader = new FileReader();
+            reader.onload = () => {
+              attachedFiles[f.name] = reader.result;
+              zone.textContent = f.name;
+              if (ctrl.auto_submit) rerunWithControls();
+            };
+            reader.readAsArrayBuffer(f);
+          }
+        });
+        wrap.appendChild(zone);
+        break;
+      }
+    }
+    bar.appendChild(wrap);
+  }
+  // Submit button
+  const btn = document.createElement('button');
+  btn.className = 'ui-submit-btn';
+  btn.textContent = 'Re-run';
+  btn.onclick = () => rerunWithControls();
+  bar.appendChild(btn);
+}
+
+function collectControlValues() {
+  const bar = document.getElementById('ui-controls-bar');
+  const params = {};
+  for (const input of bar.querySelectorAll('[data-name]')) {
+    const name = input.dataset.name;
+    if (input.type === 'checkbox') params[name] = input.checked;
+    else if (input.type === 'range' || input.type === 'number') params[name] = parseFloat(input.value);
+    else params[name] = input.value;
+  }
+  return params;
+}
+
+function rerunWithControls() {
+  // Merge control values into params and re-run
+  const controlParams = collectControlValues();
+  let existing = {};
+  try { existing = JSON.parse(paramsEditor.getValue()); } catch {}
+  const merged = Object.assign(existing, controlParams);
+  paramsEditor.setValue(JSON.stringify(merged, null, 2));
+  runCode();
+}
+
+function dismissUI() {
+  const panel = document.getElementById('ui-panel');
+  panel.classList.remove('active');
+  document.getElementById('ui-container').classList.remove('ui-layout-mode');
+  document.querySelector('#editor-panel .CodeMirror').style.display = '';
+  document.getElementById('tab-bar').style.display = '';
+}
+
 // --- Init: load from IndexedDB, restore env, then tabs ---
 (async () => {
   await openDB();
@@ -1078,5 +1763,6 @@ async function loadEnvFooter() {
   setInterval(loadServices, 3000);
 })();
 </script>
+<div id="samples-menu"></div>
 </body>
 </html>

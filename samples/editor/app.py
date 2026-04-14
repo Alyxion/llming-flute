@@ -22,7 +22,8 @@ from aiohttp import web
 
 from flute import SessionClient
 
-STATIC_DIR = Path(__file__).parent
+STATIC_DIR = Path(__file__).resolve().parent
+VENDOR_DIR = STATIC_DIR / "vendor"
 ENVS_FILE = STATIC_DIR / "environments.json"
 client: SessionClient
 current_env_key: str | None = None
@@ -162,6 +163,32 @@ async def services(request):
     return web.json_response(svcs)
 
 
+@routes.get("/api/samples")
+async def samples(request):
+    """Return aggregated sample index from all workers that provide samples."""
+    svcs = await client.services()
+    result = {}
+    for svc in svcs:
+        si = svc.get("samples")
+        if si and "categories" in si:
+            result[svc["worker_type"]] = si
+    return web.json_response(result)
+
+
+@routes.get("/api/sample/{worker_type}/{filename}")
+async def sample_source(request):
+    """Return the source code of a sample script."""
+    wt = request.match_info["worker_type"]
+    fn = request.match_info["filename"]
+    # Sanitize filename
+    if "/" in fn or "\\" in fn or fn.startswith("."):
+        return web.json_response({"error": "invalid filename"}, status=400)
+    code = await client.sample_source(wt, fn)
+    if code is None:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"code": code, "filename": fn, "worker_type": wt})
+
+
 @routes.get("/api/env")
 async def env_info(request):
     info = {}
@@ -216,6 +243,7 @@ def main():
     app = web.Application(client_max_size=50 * 1024 * 1024)  # 50 MB
     app.on_startup.append(init_client)
     app.add_routes(routes)
+    app.router.add_static("/vendor", VENDOR_DIR)
 
     print(f"Flute Editor: http://localhost:{args.port}")
     web.run_app(app, port=args.port, print=None)

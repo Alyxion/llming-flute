@@ -1,6 +1,7 @@
 """Worker configuration loading from pyproject.toml manifests."""
 
 import importlib
+import json
 import os
 import sys
 import tomllib
@@ -9,7 +10,7 @@ import tomllib
 def load_worker_config(worker_dir: str) -> dict:
     """Load worker configuration from pyproject.toml in the given directory.
 
-    Returns a dict with keys: name, type, handler, description.
+    Returns a dict with keys: name, type, handler, description, worker_dir, samples.
     """
     pyproject_path = os.path.join(worker_dir, "pyproject.toml")
     with open(pyproject_path, "rb") as f:
@@ -17,6 +18,9 @@ def load_worker_config(worker_dir: str) -> dict:
 
     project = data.get("project", {})
     flute = data.get("tool", {}).get("flute", {}).get("worker", {})
+
+    # Load samples index if present
+    samples = _load_samples_index(worker_dir)
 
     return {
         "name": project.get("name", os.path.basename(worker_dir)),
@@ -26,7 +30,18 @@ def load_worker_config(worker_dir: str) -> dict:
         "dependencies": project.get("dependencies", []),
         "operations": flute.get("operations", []),
         "accept_files": flute.get("accept_files", []),
+        "worker_dir": worker_dir,
+        "samples": samples,
     }
+
+
+def _load_samples_index(worker_dir: str) -> dict | None:
+    """Load samples/index.json from the worker directory if it exists."""
+    index_path = os.path.join(worker_dir, "samples", "index.json")
+    if not os.path.isfile(index_path):
+        return None
+    with open(index_path) as f:
+        return json.load(f)
 
 
 def load_task_handler(worker_dir: str, handler_ref: str):

@@ -1,0 +1,43 @@
+{
+  "categories": [
+    {
+      "name": "Charts",
+      "items": [
+        {"file": "plotly_scatter.py", "title": "Scatter Plot", "description": "Interactive scatter with trend line and point count slider"},
+        {"file": "plotly_bar.py", "title": "Bar Chart", "description": "Grouped bar chart comparing categories"},
+        {"file": "plotly_heatmap.py", "title": "Heatmap", "description": "Mathematical function as a heatmap with resolution control"},
+        {"file": "matplotlib_export.py", "title": "Matplotlib Export", "description": "Classic matplotlib chart rendered as PNG with style picker"}
+      ]
+    },
+    {
+      "name": "3D",
+      "items": [
+        {"file": "three_primitives.py", "title": "Primitives", "description": "Box, sphere, cylinder in a 3D scene"},
+        {"file": "three_curves.py", "title": "Curves", "description": "Bézier, Catmull-Rom helix, and axis lines"},
+        {"file": "three_surface.py", "title": "Surface Plot", "description": "Mathematical surface with resolution and wireframe controls"},
+        {"file": "three_mesh.py", "title": "Custom Mesh", "description": "Icosahedron built from vertices and faces"}
+      ]
+    },
+    {
+      "name": "Data",
+      "items": [
+        {"file": "table_basic.py", "title": "Data Table", "description": "Employee directory as a styled table"},
+        {"file": "table_pandas.py", "title": "Pandas Analysis", "description": "DataFrame groupby summary with sample size slider"}
+      ]
+    },
+    {
+      "name": "Layouts",
+      "items": [
+        {"file": "split_chart_table.py", "title": "Split View", "description": "Side-by-side chart and peak detection table"},
+        {"file": "tabs_multi.py", "title": "Tabbed Views", "description": "Chart, 3D cloud, and data in tabs"},
+        {"file": "grid_dashboard.py", "title": "Dashboard Grid", "description": "4 charts in a 2×2 dashboard layout"}
+      ]
+    },
+    {
+      "name": "Controls",
+      "items": [
+        {"file": "controls_playground.py", "title": "Control Playground", "description": "All control types driving a function explorer"}
+      ]
+    }
+  ]
+}

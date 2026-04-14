@@ -1,10 +1,11 @@
 """Unit tests for flute.worker_config."""
 
+import json
 import os
 import sys
 
 import pytest
-from flute.worker_config import load_task_handler, load_worker_config
+from flute.worker_config import _load_samples_index, load_task_handler, load_worker_config
 
 
 class TestLoadWorkerConfig:
@@ -137,9 +138,47 @@ type = "python-runner"
         config = load_worker_config(str(tmp_path))
         assert config["accept_files"] == []
 
+    def test_samples_loaded(self, tmp_path):
+        """Loads samples index when samples/index.json exists."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'test-worker'\n")
+        samples_dir = tmp_path / "samples"
+        samples_dir.mkdir()
+        index = {"categories": [{"name": "Charts", "items": [
+            {"file": "demo.py", "title": "Demo"}
+        ]}]}
+        (samples_dir / "index.json").write_text(json.dumps(index))
+        config = load_worker_config(str(tmp_path))
+        assert config["samples"] is not None
+        assert config["samples"]["categories"][0]["name"] == "Charts"
+        assert config["worker_dir"] == str(tmp_path)
+
+    def test_no_samples_dir(self, tmp_path):
+        """Samples is None when no samples directory exists."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[project]\nname = 'bare'\n")
+        config = load_worker_config(str(tmp_path))
+        assert config["samples"] is None
+
     def test_missing_pyproject_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_worker_config(str(tmp_path))
+
+
+class TestLoadSamplesIndex:
+    def test_loads_index(self, tmp_path):
+        samples_dir = tmp_path / "samples"
+        samples_dir.mkdir()
+        index = {"categories": [{"name": "Test", "items": []}]}
+        (samples_dir / "index.json").write_text(json.dumps(index))
+        result = _load_samples_index(str(tmp_path))
+        assert result["categories"][0]["name"] == "Test"
+
+    def test_missing_returns_none(self, tmp_path):
+        assert _load_samples_index(str(tmp_path)) is None
+
+    def test_no_samples_dir_returns_none(self, tmp_path):
+        assert _load_samples_index(str(tmp_path)) is None
 
 
 class TestLoadTaskHandler:

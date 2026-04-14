@@ -64,6 +64,7 @@ __all__ = [
     "_charge_quota",
     "_heartbeat",
     "_register_service",
+    "_store_sample_sources",
 ]
 
 # ---------------------------------------------------------------------------
@@ -297,7 +298,27 @@ async def _register_service(rconn, handler: WorkerHandler):
         # Prefer handler description if config doesn't have one
         if not info["description"]:
             info["description"] = getattr(th, "description", "")
+    # Include sample index if the worker provides one
+    samples = config.get("samples")
+    if samples:
+        info["samples"] = samples
+        # Store sample file contents in Redis for client retrieval
+        worker_dir = config.get("worker_dir", "")
+        await _store_sample_sources(rconn, handler.worker_type, worker_dir, samples)
     await rconn.hset("services", handler.worker_type, json.dumps(info))
+
+
+async def _store_sample_sources(rconn, worker_type, worker_dir, samples_index):
+    """Store sample script contents in Redis so clients can fetch them."""
+    samples_dir = os.path.join(worker_dir, "samples")
+    key = f"samples:{worker_type}"
+    for cat in samples_index.get("categories", []):
+        for item in cat.get("items", []):
+            fpath = os.path.join(samples_dir, item["file"])
+            if os.path.isfile(fpath):
+                with open(fpath) as f:
+                    await rconn.hset(key, item["file"], f.read())
+    await rconn.expire(key, INFRA_TTL)
 
 
 # ---------------------------------------------------------------------------

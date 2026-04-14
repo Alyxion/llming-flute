@@ -149,8 +149,15 @@ def _make_preexec(max_disk_mb: int):
 # Python handler — runs arbitrary code in a subprocess
 # ---------------------------------------------------------------------------
 
+_FLUTE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 RUNNER_TEMPLATE = """\
 import os, sys, traceback
+
+# Make flute package importable for user scripts (e.g. flute.ui)
+_flute_root = {flute_root!r}
+if _flute_root not in sys.path:
+    sys.path.insert(0, _flute_root)
 
 # Replace environment with a minimal, sanitized set
 _clean = {{
@@ -199,7 +206,7 @@ class PythonHandler(WorkerHandler):
             f.write(code)
 
         # Write runner wrapper
-        runner_code = RUNNER_TEMPLATE.format(workdir=workdir)
+        runner_code = RUNNER_TEMPLATE.format(workdir=workdir, flute_root=_FLUTE_ROOT)
         runner_path = os.path.join(workdir, "__session_runner.py")
         with open(runner_path, "w") as f:
             f.write(runner_code)

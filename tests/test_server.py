@@ -13,6 +13,7 @@ from flute.server import (
     _charge_quota,
     _heartbeat,
     _register_service,
+    _store_sample_sources,
     create_handler,
     run_session,
     serve,
@@ -279,6 +280,90 @@ class TestRegisterService:
         await _register_service(r, handler)
         info = json.loads((await r.hgetall("services"))["image-service"])
         assert info["accept_files"] == ["image/*"]
+
+    @pytest.mark.asyncio
+    async def test_samples_included_in_registration(self, tmp_path):
+        """When worker_config has samples, they are included in service info."""
+        r = FakeRedis()
+        handler = PythonHandler(worker_type="test-python")
+        # Create a fake samples dir with a file
+        samples_dir = tmp_path / "samples"
+        samples_dir.mkdir()
+        (samples_dir / "demo.py").write_text("print('hello')")
+        (samples_dir / "index.json").write_text(json.dumps({
+            "categories": [{"name": "Test", "items": [
+                {"file": "demo.py", "title": "Demo"}
+            ]}]
+        }))
+        handler.worker_config = {
+            "type": "python-runner",
+            "description": "Test",
+            "dependencies": [],
+            "samples": {
+                "categories": [{"name": "Test", "items": [
+                    {"file": "demo.py", "title": "Demo"}
+                ]}]
+            },
+            "worker_dir": str(tmp_path),
+        }
+        await _register_service(r, handler)
+        info = json.loads((await r.hgetall("services"))["test-python"])
+        assert "samples" in info
+        assert info["samples"]["categories"][0]["name"] == "Test"
+        # Sample source should be stored in Redis
+        source = await r.hget("samples:test-python", "demo.py")
+        assert source == "print('hello')"
+
+    @pytest.mark.asyncio
+    async def test_no_samples_omitted(self):
+        """When worker_config has no samples, the key is omitted."""
+        r = FakeRedis()
+        handler = PythonHandler()
+        handler.worker_config = {
+            "type": "python-runner",
+            "description": "",
+            "dependencies": [],
+        }
+        await _register_service(r, handler)
+        info = json.loads((await r.hgetall("services"))["python"])
+        assert "samples" not in info
+
+
+class TestStoreSampleSources:
+    @pytest.mark.asyncio
+    async def test_stores_files(self, tmp_path):
+        samples_dir = tmp_path / "samples"
+        samples_dir.mkdir()
+        (samples_dir / "a.py").write_text("code_a")
+        (samples_dir / "b.py").write_text("code_b")
+        index = {"categories": [{"name": "Cat", "items": [
+            {"file": "a.py", "title": "A"},
+            {"file": "b.py", "title": "B"},
+        ]}]}
+        r = FakeRedis()
+        await _store_sample_sources(r, "test-worker", str(tmp_path), index)
+        assert await r.hget("samples:test-worker", "a.py") == "code_a"
+        assert await r.hget("samples:test-worker", "b.py") == "code_b"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_skipped(self, tmp_path):
+        samples_dir = tmp_path / "samples"
+        samples_dir.mkdir()
+        (samples_dir / "exists.py").write_text("ok")
+        index = {"categories": [{"name": "Cat", "items": [
+            {"file": "exists.py", "title": "Exists"},
+            {"file": "missing.py", "title": "Missing"},
+        ]}]}
+        r = FakeRedis()
+        await _store_sample_sources(r, "test-worker", str(tmp_path), index)
+        assert await r.hget("samples:test-worker", "exists.py") == "ok"
+        assert await r.hget("samples:test-worker", "missing.py") is None
+
+    @pytest.mark.asyncio
+    async def test_empty_categories(self, tmp_path):
+        r = FakeRedis()
+        await _store_sample_sources(r, "wt", str(tmp_path), {"categories": []})
+        assert await r.hgetall("samples:wt") == {}
 
 
 # ---------------------------------------------------------------------------

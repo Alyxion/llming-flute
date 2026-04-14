@@ -505,6 +505,24 @@ class TestServices:
         assert echo["dependencies"] == ["pydantic"]
 
 
+class TestSampleSource:
+    @pytest.mark.asyncio
+    async def test_returns_source(self, client, fake_redis):
+        await fake_redis.hset("samples:python", "demo.py", "print('hello')")
+        code = await client.sample_source("python", "demo.py")
+        assert code == "print('hello')"
+
+    @pytest.mark.asyncio
+    async def test_missing_returns_none(self, client, fake_redis):
+        code = await client.sample_source("python", "nonexistent.py")
+        assert code is None
+
+    @pytest.mark.asyncio
+    async def test_missing_worker_returns_none(self, client, fake_redis):
+        code = await client.sample_source("no-such-worker", "demo.py")
+        assert code is None
+
+
 class TestSubmitService:
     @pytest.mark.asyncio
     async def test_basic(self, client, fake_redis):
